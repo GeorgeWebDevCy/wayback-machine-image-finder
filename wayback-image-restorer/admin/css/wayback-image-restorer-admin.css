@@ -1,0 +1,341 @@
+.wir-wrap {
+    max-width: 1400px;
+}
+
+.wir-wrap h1 {
+    margin-bottom: 20px;
+}
+
+.wir-grid {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.wir-main {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.wir-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.wir-panel {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.wir-panel h3 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.wir-log-stats p {
+    margin: 8px 0;
+}
+
+.wir-log-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 15px;
+}
+
+.wir-scan-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.wir-status {
+    font-style: italic;
+    color: #666;
+}
+
+.wir-status.error {
+    color: #d63638;
+}
+
+.wir-status.success {
+    color: #00a32a;
+}
+
+.wir-results {
+    margin-top: 20px;
+}
+
+.wir-results table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.wir-results th,
+.wir-results td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.wir-results th {
+    background: #f8f9fa;
+    font-weight: 600;
+}
+
+.wir-results tr:hover {
+    background: #f8f9fa;
+}
+
+.wir-image-preview {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #f0f0f0;
+}
+
+.wir-broken-icon {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f0f0f0;
+    border-radius: 4px;
+    color: #d63638;
+    font-size: 24px;
+}
+
+.wir-url-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wir-posts-cell {
+    font-size: 12px;
+    color: #666;
+}
+
+.wir-archive-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.wir-archive-status.found {
+    color: #00a32a;
+}
+
+.wir-archive-status.not-found {
+    color: #d63638;
+}
+
+.wir-actions-cell {
+    white-space: nowrap;
+}
+
+.wir-empty-state {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+}
+
+.wir-stats-summary {
+    display: flex;
+    gap: 30px;
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.wir-stat {
+    text-align: center;
+}
+
+.wir-stat-value {
+    font-size: 24px;
+    font-weight: 600;
+    color: #2271b1;
+}
+
+.wir-stat-label {
+    font-size: 12px;
+    color: #666;
+}
+
+.wir-bulk-actions {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.wir-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.wir-modal-content {
+    background: #fff;
+    padding: 30px;
+    border-radius: 8px;
+    max-width: 800px;
+    max-height: 80vh;
+    width: 90%;
+    overflow-y: auto;
+    position: relative;
+}
+
+.wir-modal-small {
+    max-width: 400px;
+}
+
+.wir-modal-close {
+    position: absolute;
+    top: 10px;
+    right: 15px;
+    font-size: 24px;
+    cursor: pointer;
+    color: #666;
+}
+
+.wir-modal-close:hover {
+    color: #000;
+}
+
+.wir-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.wir-log-filters {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.wir-log-filters select,
+.wir-log-filters input {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.wir-log-filters input {
+    flex: 1;
+}
+
+.wir-logs-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #eee;
+    border-radius: 4px;
+}
+
+.wir-log-entry {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.wir-log-entry:last-child {
+    border-bottom: none;
+}
+
+.wir-log-entry .timestamp {
+    color: #666;
+    margin-right: 10px;
+}
+
+.wir-log-entry .level {
+    font-weight: 600;
+    margin-right: 10px;
+}
+
+.wir-log-entry .level.debug { color: #999; }
+.wir-log-entry .level.info { color: #2271b1; }
+.wir-log-entry .level.success { color: #00a32a; }
+.wir-log-entry .level.warning { color: #dba617; }
+.wir-log-entry .level.error { color: #d63638; }
+
+.wir-log-entry .action {
+    color: #666;
+    margin-right: 10px;
+}
+
+.wir-log-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.wir-progress-bar {
+    height: 20px;
+    background: #f0f0f0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 20px 0;
+}
+
+.wir-progress-fill {
+    height: 100%;
+    background: #2271b1;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+@media (max-width: 1024px) {
+    .wir-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .wir-sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    
+    .wir-sidebar .wir-panel {
+        flex: 1;
+        min-width: 280px;
+    }
+}
+
+@media (max-width: 600px) {
+    .wir-results table {
+        display: block;
+        overflow-x: auto;
+    }
+    
+    .wir-stats-summary {
+        flex-wrap: wrap;
+    }
+    
+    .wir-stat {
+        flex: 1;
+        min-width: 80px;
+    }
+}

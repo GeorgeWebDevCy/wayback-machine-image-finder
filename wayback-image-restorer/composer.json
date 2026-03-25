@@ -1,0 +1,20 @@
+{
+    "name": "wayback/image-restorer",
+    "description": "Find missing images and restore them from the Wayback Machine",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "keywords": ["wordpress", "images", "wayback-machine", "restore"],
+    "homepage": "https://github.com/GeorgeWebDevCy/wayback-machine-image-finder",
+    "require": {
+        "php": ">=7.4",
+        "yahnis-elsts/plugin-update-checker": "^5.6"
+    },
+    "autoload": {
+        "files": ["includes/functions-helpers.php"]
+    },
+    "config": {
+        "optimize-autoloader": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
