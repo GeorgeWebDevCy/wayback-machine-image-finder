@@ -16,7 +16,7 @@ final class Admin
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.5';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.6';
     }
 
     public function add_admin_menu(): void
@@ -177,6 +177,19 @@ final class Admin
             'nonce' => wp_create_nonce('wir_nonce'),
             'strings' => [
                 'scanning' => __('Scanning...', 'wayback-image-restorer'),
+                'scanComplete' => __('Scan complete!', 'wayback-image-restorer'),
+                'scanInProgress' => __('Scan in progress', 'wayback-image-restorer'),
+                'scanElapsed' => __('Elapsed', 'wayback-image-restorer'),
+                'scanActivityTitle' => __('Recent Scan Activity', 'wayback-image-restorer'),
+                'scanActivityLoading' => __('Loading scan activity...', 'wayback-image-restorer'),
+                'scanActivityEmpty' => __('No scan activity was recorded for this run.', 'wayback-image-restorer'),
+                'scanActivityError' => __('Unable to load scan activity.', 'wayback-image-restorer'),
+                'scanStagePrepare' => __('Preparing scan request...', 'wayback-image-restorer'),
+                'scanStagePosts' => __('Scanning posts and pages for image references...', 'wayback-image-restorer'),
+                'scanStageImages' => __('Checking image URLs and local files...', 'wayback-image-restorer'),
+                'scanStageWayback' => __('Looking for archived copies in the Wayback Machine...', 'wayback-image-restorer'),
+                'scanStageMedia' => __('Checking media library attachments...', 'wayback-image-restorer'),
+                'scanStageFinalize' => __('Finalizing scan results...', 'wayback-image-restorer'),
                 'restoring' => __('Restoring...', 'wayback-image-restorer'),
                 'confirmRestore' => __('Are you sure you want to restore the selected images?', 'wayback-image-restorer'),
                 'confirmClear' => __('Are you sure you want to clear all logs?', 'wayback-image-restorer'),

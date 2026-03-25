@@ -6,6 +6,9 @@
         currentResults: null,
         logsPage: 1,
         logsTotalPages: 1,
+        scanProgressTimer: null,
+        scanStartedAtMs: null,
+        currentScanStageIndex: -1,
 
         init: function() {
             this.bindEvents();
@@ -59,13 +62,107 @@
             }, this));
         },
 
+        startScanProgress: function() {
+            this.stopScanProgress();
+            this.scanStartedAtMs = Date.now();
+            this.currentScanStageIndex = -1;
+
+            $('#wir-scan-results').html(this.getScanProgressMarkup());
+            this.updateScanProgress();
+
+            this.scanProgressTimer = window.setInterval($.proxy(function() {
+                this.updateScanProgress();
+            }, this), 500);
+        },
+
+        stopScanProgress: function() {
+            if (this.scanProgressTimer) {
+                window.clearInterval(this.scanProgressTimer);
+                this.scanProgressTimer = null;
+            }
+
+            this.scanStartedAtMs = null;
+            this.currentScanStageIndex = -1;
+        },
+
+        getScanProgressMarkup: function() {
+            const title = this.escapeHtml(wirData.strings.scanInProgress || 'Scan in progress');
+            const stage = this.escapeHtml(wirData.strings.scanStagePrepare || 'Preparing scan request...');
+            const elapsed = this.escapeHtml(wirData.strings.scanElapsed || 'Elapsed');
+            const activityTitle = this.escapeHtml(wirData.strings.scanActivityTitle || 'Recent Scan Activity');
+
+            return `
+                <div class="wir-scan-progress" aria-live="polite">
+                    <div class="wir-scan-progress-header">
+                        <div>
+                            <div class="wir-scan-progress-title">${title}</div>
+                            <p id="wir-scan-stage" class="wir-scan-stage">${stage}</p>
+                        </div>
+                        <div class="wir-scan-elapsed">${elapsed}: <span id="wir-scan-elapsed-value">0.0s</span></div>
+                    </div>
+                    <div class="wir-progress-bar is-indeterminate">
+                        <div class="wir-progress-fill"></div>
+                    </div>
+                    <div class="wir-scan-activity-panel is-live">
+                        <div class="wir-scan-activity-heading">${activityTitle}</div>
+                        <ul id="wir-scan-progress-feed" class="wir-scan-activity-feed">
+                            <li class="wir-scan-progress-placeholder">${stage}</li>
+                        </ul>
+                    </div>
+                </div>
+            `;
+        },
+
+        getScanStages: function() {
+            return [
+                wirData.strings.scanStagePrepare || 'Preparing scan request...',
+                wirData.strings.scanStagePosts || 'Scanning posts and pages for image references...',
+                wirData.strings.scanStageImages || 'Checking image URLs and local files...',
+                wirData.strings.scanStageWayback || 'Looking for archived copies in the Wayback Machine...',
+                wirData.strings.scanStageMedia || 'Checking media library attachments...',
+                wirData.strings.scanStageFinalize || 'Finalizing scan results...'
+            ];
+        },
+
+        updateScanProgress: function() {
+            if (!this.scanStartedAtMs) {
+                return;
+            }
+
+            const elapsedSeconds = (Date.now() - this.scanStartedAtMs) / 1000;
+            const stages = this.getScanStages();
+            const stageIndex = Math.floor(elapsedSeconds / 4) % stages.length;
+            const stageMessage = stages[stageIndex];
+
+            $('#wir-scan-elapsed-value').text(this.formatElapsedTime(elapsedSeconds));
+            $('#wir-scan-stage').text(stageMessage);
+
+            if (stageIndex !== this.currentScanStageIndex) {
+                this.currentScanStageIndex = stageIndex;
+                this.appendScanProgressMessage(stageMessage);
+            }
+        },
+
+        appendScanProgressMessage: function(message) {
+            const $list = $('#wir-scan-progress-feed');
+            if ($list.length === 0) {
+                return;
+            }
+
+            $list.find('.wir-scan-progress-placeholder').remove();
+            $list.prepend(`<li>${this.escapeHtml(message)}</li>`);
+            $list.children().slice(5).remove();
+        },
+
         startScan: function() {
             const $btn = $('#wir-start-scan');
             const $status = $('#wir-scan-status');
-            
+
+            this.currentScanId = null;
+            this.currentResults = null;
             $btn.prop('disabled', true).text(wirData.strings.scanning);
-            $status.removeClass('error success').text('Scanning for broken images...');
-            $('#wir-scan-results').html('<p>Scanning...</p>');
+            $status.removeClass('error success').text(wirData.strings.scanInProgress || 'Scanning for broken images...');
+            this.startScanProgress();
 
             const data = {
                 action: 'wir_scan',
@@ -89,20 +186,26 @@
                 data: data,
                 success: $.proxy(function(response) {
                     if (response.success) {
+                        this.stopScanProgress();
                         this.currentScanId = response.data.scan_id;
                         this.currentResults = response.data;
                         this.displayResults(response.data);
-                        $status.addClass('success').text('Scan complete!');
+                        $status.addClass('success').text(wirData.strings.scanComplete || 'Scan complete!');
                     } else {
+                        this.stopScanProgress();
+                        $('#wir-scan-results').html('<p class="description">Scan failed. Check the plugin logs for more details.</p>');
                         $status.addClass('error').text(response.data.message || 'Scan failed');
                     }
                 }, this),
                 error: $.proxy(function() {
+                    this.stopScanProgress();
+                    $('#wir-scan-results').html('<p class="description">Scan request failed. Please try again.</p>');
                     $status.addClass('error').text('Request failed');
                 }, this),
-                complete: function() {
+                complete: $.proxy(function() {
+                    this.stopScanProgress();
                     $btn.prop('disabled', false).text('Start Scan');
-                }
+                }, this)
             });
         },
 
@@ -199,10 +302,20 @@
                 html += `<p class="description" style="margin-top: 15px;">Duration: ${durationSeconds} seconds</p>`;
             }
 
+            html += `
+                <div class="wir-scan-activity-panel">
+                    <div class="wir-scan-activity-heading">${this.escapeHtml(wirData.strings.scanActivityTitle || 'Recent Scan Activity')}</div>
+                    <div id="wir-scan-activity-list">
+                        <p class="description">${this.escapeHtml(wirData.strings.scanActivityLoading || 'Loading scan activity...')}</p>
+                    </div>
+                </div>
+            `;
+
             $('#wir-scan-results').html(html);
 
-            $('#wir-select-all').on('change', $.proxy(function() {
-                $('.wir-image-checkbox').prop('checked', $(this).prop('checked'));
+            $('#wir-select-all').on('change', $.proxy(function(e) {
+                const isChecked = $(e.currentTarget).prop('checked');
+                $('.wir-image-checkbox').prop('checked', isChecked);
                 this.updateSelectedCount();
             }, this));
 
@@ -223,6 +336,12 @@
                     this.confirmRestore(selected);
                 }
             }, this));
+
+            this.updateSelectedCount();
+
+            if (data.scan_id) {
+                this.loadScanActivity(data.scan_id);
+            }
         },
 
         formatTimestamp: function(ts) {
@@ -233,6 +352,10 @@
         getDurationSeconds: function(data) {
             const value = Number(data.duration_seconds);
             return Number.isFinite(value) ? value : null;
+        },
+
+        formatElapsedTime: function(seconds) {
+            return `${seconds < 10 ? seconds.toFixed(1) : seconds.toFixed(0)}s`;
         },
 
         getImageById: function(imageId) {
@@ -248,6 +371,133 @@
         updateSelectedCount: function() {
             const count = $('.wir-image-checkbox:checked').length;
             $('#wir-selected-count').text(count);
+            this.updateSelectAllState();
+        },
+
+        updateSelectAllState: function() {
+            const $selectAll = $('#wir-select-all');
+            if ($selectAll.length === 0) {
+                return;
+            }
+
+            const total = $('.wir-image-checkbox').length;
+            const checked = $('.wir-image-checkbox:checked').length;
+
+            $selectAll.prop('checked', total > 0 && checked === total);
+            $selectAll.prop('indeterminate', checked > 0 && checked < total);
+        },
+
+        loadScanActivity: function(scanId) {
+            const $container = $('#wir-scan-activity-list');
+            if ($container.length === 0) {
+                return;
+            }
+
+            $.ajax({
+                url: wirData.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'wir_get_logs',
+                    nonce: wirData.nonce,
+                    page: 1,
+                    per_page: 10,
+                    search: scanId
+                },
+                success: $.proxy(function(response) {
+                    if (!response.success) {
+                        $container.html(`<p class="description">${this.escapeHtml(wirData.strings.scanActivityError || 'Unable to load scan activity.')}</p>`);
+                        return;
+                    }
+
+                    this.renderScanActivity(response.data.logs || [], scanId);
+                }, this),
+                error: $.proxy(function() {
+                    $container.html(`<p class="description">${this.escapeHtml(wirData.strings.scanActivityError || 'Unable to load scan activity.')}</p>`);
+                }, this)
+            });
+        },
+
+        renderScanActivity: function(logs, scanId) {
+            const $container = $('#wir-scan-activity-list');
+            if ($container.length === 0) {
+                return;
+            }
+
+            const relevantLogs = Array.isArray(logs)
+                ? logs.filter(function(log) {
+                    return String(log.scan_id || '') === String(scanId);
+                })
+                : [];
+
+            if (relevantLogs.length === 0) {
+                $container.html(`<p class="description">${this.escapeHtml(wirData.strings.scanActivityEmpty || 'No scan activity was recorded for this run.')}</p>`);
+                return;
+            }
+
+            let html = '<ul class="wir-scan-activity-feed">';
+
+            relevantLogs.slice().reverse().forEach(function(log) {
+                html += `
+                    <li>
+                        <span class="wir-scan-activity-time">${this.escapeHtml(this.formatLogTime(log.timestamp))}</span>
+                        <span class="wir-scan-activity-text">${this.escapeHtml(this.formatScanLogMessage(log))}</span>
+                    </li>
+                `;
+            }, this);
+
+            html += '</ul>';
+            $container.html(html);
+        },
+
+        formatLogTime: function(timestamp) {
+            if (!timestamp) {
+                return '';
+            }
+
+            const date = new Date(timestamp);
+            if (Number.isNaN(date.getTime())) {
+                return '';
+            }
+
+            return date.toLocaleTimeString();
+        },
+
+        formatScanLogMessage: function(log) {
+            switch (log.action) {
+                case 'scan_start':
+                    return 'Scan started with the current filters.';
+                case 'scan_posts_started':
+                    return `Scanning ${Number(log.total_posts || 0)} post(s).`;
+                case 'scan_posts_complete':
+                    return `Finished posts scan after ${Number(log.posts_scanned || 0)} post(s) and ${Number(log.images_found || 0)} image reference(s).`;
+                case 'scan_media_started':
+                    return 'Checking media library attachments for missing files.';
+                case 'scan_media_complete':
+                    return `Media library scan finished. Broken images currently found: ${Number(log.broken_images || 0)}.`;
+                case 'scan_stopped_early':
+                    return `Scan stopped early after ${Number(log.processed_posts || 0)} of ${Number(log.total_posts || 0)} post(s) because of resource limits.`;
+                case 'scan_complete':
+                    return `Scan finished in ${log.duration_seconds || 0} second(s) with ${Number(log.found_broken || 0)} broken image(s).`;
+                default:
+                    return this.humanizeLogAction(log.action || 'scan_update');
+            }
+        },
+
+        humanizeLogAction: function(action) {
+            return String(action)
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, function(char) {
+                    return char.toUpperCase();
+                });
+        },
+
+        escapeHtml: function(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
         },
 
         confirmRestore: function(imageIds) {
@@ -307,13 +557,16 @@
 
         bulkRestore: function(imageIds, dryRun) {
             const $modal = $('#wir-progress-modal');
+            const $bar = $modal.find('.wir-progress-bar');
             const $fill = $('.wir-progress-fill');
             const $text = $('#wir-progress-text');
             const $current = $('#wir-progress-current');
             
             $modal.show();
-            $fill.css('width', '0%');
-            $text.text('0 / ' + imageIds.length);
+            $bar.addClass('is-indeterminate');
+            $fill.css('width', '');
+            $text.text(dryRun ? 'Checking selected images...' : 'Restoring selected images...');
+            $current.text('Submitting restore request...');
 
             const data = {
                 action: 'wir_bulk_restore',
@@ -329,6 +582,7 @@
                 success: function(response) {
                     if (response.success) {
                         const result = response.data;
+                        $bar.removeClass('is-indeterminate');
                         $fill.css('width', '100%');
                         $text.text('Complete!');
                         $current.html(
@@ -341,11 +595,15 @@
                             $modal.hide();
                         }, 2000);
                     } else {
+                        $bar.removeClass('is-indeterminate');
+                        $fill.css('width', '0%');
                         alert('Bulk restore failed: ' + (response.data.error || 'Unknown error'));
                         $modal.hide();
                     }
                 },
                 error: function() {
+                    $bar.removeClass('is-indeterminate');
+                    $fill.css('width', '0%');
                     alert('Request failed');
                     $modal.hide();
                 }

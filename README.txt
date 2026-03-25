@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.5
+Stable tag: 1.0.6
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,11 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.6 =
+* Fix the scan results "Select all" checkbox and keep the selected count in sync
+* Add a clearer scan progress state with elapsed time, stage messaging, and scan activity output from the logger
+* Improve restore progress feedback while bulk restore requests are running
+
 = 1.0.5 =
 * Fix real restore requests so disabling Dry Run actually performs restores
 * Repair missing media-library attachments in place instead of only importing new files
@@ -84,6 +89,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.6 =
+Fixes checkbox selection and adds a clearer scan progress/activity experience in admin.
 
 = 1.0.5 =
 Fixes restore execution, media-library repair handling, scan coverage, and timeout behavior.

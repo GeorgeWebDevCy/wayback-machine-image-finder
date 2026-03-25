@@ -77,6 +77,11 @@ final class Image_Scanner
         $total_posts = $this->count_posts($args['post_types'], $args['date_from'], $args['date_to']);
         $processed_posts = 0;
 
+        $logger->info('scan_posts_started', [
+            'scan_id' => $this->scan_id,
+            'total_posts' => $total_posts,
+        ]);
+
         $offset = 0;
         while ($processed_posts < $total_posts) {
             if ($this->resources->should_stop('scan_batch')) {
@@ -149,8 +154,22 @@ final class Image_Scanner
 
         $stats['posts_scanned'] = $processed_posts;
 
+        $logger->info('scan_posts_complete', [
+            'scan_id' => $this->scan_id,
+            'posts_scanned' => $processed_posts,
+            'images_found' => $stats['images_found'],
+        ]);
+
+        $logger->info('scan_media_started', [
+            'scan_id' => $this->scan_id,
+        ]);
         $this->scan_media_library($broken_images);
         $stats['images_broken'] = count($broken_images);
+
+        $logger->info('scan_media_complete', [
+            'scan_id' => $this->scan_id,
+            'broken_images' => $stats['images_broken'],
+        ]);
 
         $end_time = microtime(true);
         $duration = round($end_time - $start_time, 2);

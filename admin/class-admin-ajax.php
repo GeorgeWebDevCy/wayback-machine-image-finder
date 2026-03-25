@@ -161,7 +161,7 @@ final class Ajax
 
         $args = [
             'page' => isset($_POST['page']) ? absint($_POST['page']) : 1,
-            'per_page' => 50,
+            'per_page' => isset($_POST['per_page']) ? max(1, min(100, absint($_POST['per_page']))) : 50,
             'level' => sanitize_text_field($_POST['level'] ?? 'all'),
             'action' => sanitize_text_field($_POST['action'] ?? 'all'),
             'search' => sanitize_text_field($_POST['search'] ?? ''),
