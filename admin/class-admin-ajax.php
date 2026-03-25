@@ -97,8 +97,7 @@ final class Ajax
 
         $offset = isset($_POST['offset']) ? max(0, absint($_POST['offset'])) : 0;
         $limit = isset($_POST['limit']) ? max(1, min(100, absint($_POST['limit']))) : 40;
-
-        $attachments = get_posts([
+        $args = [
             'post_type' => 'attachment',
             'post_mime_type' => 'image',
             'posts_per_page' => $limit,
@@ -106,7 +105,25 @@ final class Ajax
             'orderby' => 'ID',
             'order' => 'ASC',
             'offset' => $offset,
-        ]);
+        ];
+
+        if (!empty($_POST['date_from'])) {
+            $args['date_query'][] = ['after' => sanitize_text_field((string) $_POST['date_from']), 'inclusive' => true];
+        }
+
+        if (!empty($_POST['date_to'])) {
+            $args['date_query'][] = ['before' => sanitize_text_field((string) $_POST['date_to']), 'inclusive' => true];
+        }
+
+        if (count($args['date_query'] ?? []) > 1) {
+            $args['date_query']['relation'] = 'AND';
+        } elseif (isset($args['date_query'][0])) {
+            $args['date_query'] = $args['date_query'][0];
+        } else {
+            unset($args['date_query']);
+        }
+
+        $attachments = get_posts($args);
 
         $items = [];
         foreach ($attachments as $attachment) {

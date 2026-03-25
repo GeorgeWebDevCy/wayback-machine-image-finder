@@ -197,7 +197,9 @@
                         action: 'wir_get_media_candidates',
                         nonce: wirData.nonce,
                         offset: offset,
-                        limit: 40
+                        limit: 40,
+                        date_from: $('#wir_date_from').val(),
+                        date_to: $('#wir_date_to').val()
                     });
                 } catch (error) {
                     return verifiedData;

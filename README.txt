@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.10
+Stable tag: 1.0.11
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.11 =
+* Respect the scan date range when browser-verifying media-library attachments so targeted scans can reach the relevant month faster
+
 = 1.0.10 =
 * Add a browser-verified media-library scan pass for attachments that fail in real page loads but look healthy to server-side loopback requests
 * Enrich browser-detected media failures with Wayback archive matches during the same scan
@@ -107,6 +110,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.11 =
+Makes browser-verified media scans respect the selected date range for faster targeted runs.
 
 = 1.0.10 =
 Improves detection for media-library images that break in browsers but slip past server-side URL checks.
