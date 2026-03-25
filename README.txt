@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.6
+Stable tag: 1.0.7
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,10 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.7 =
+* Fix in-place media restores that were falsely failing when WordPress kept the same attachment file path
+* Add safer attachment path metadata syncing and better logging for real path-sync failures
+
 = 1.0.6 =
 * Fix the scan results "Select all" checkbox and keep the selected count in sync
 * Add a clearer scan progress state with elapsed time, stage messaging, and scan activity output from the logger
@@ -89,6 +93,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.7 =
+Fixes false attachment path errors during in-place media restores.
 
 = 1.0.6 =
 Fixes checkbox selection and adds a clearer scan progress/activity experience in admin.

@@ -576,10 +576,11 @@ final class Image_Restorer
 
         clearstatcache(true, $target_path);
 
-        if (update_attached_file($attachment_id, $target_path) === false) {
+        $path_sync = $this->sync_attachment_file_path($attachment_id, $target_path);
+        if (!$path_sync['success']) {
             return [
                 'success' => false,
-                'error' => 'Failed to update attachment file path',
+                'error' => $path_sync['error'],
             ];
         }
 
@@ -616,6 +617,62 @@ final class Image_Restorer
         ];
     }
 
+    private function sync_attachment_file_path(int $attachment_id, string $target_path): array
+    {
+        $normalized_target_path = wp_normalize_path($target_path);
+        $current_path = get_attached_file($attachment_id);
+        $normalized_current_path = is_string($current_path) ? wp_normalize_path($current_path) : '';
+
+        if ($normalized_current_path === $normalized_target_path) {
+            return [
+                'success' => true,
+                'changed' => false,
+            ];
+        }
+
+        $update_result = update_attached_file($attachment_id, $target_path);
+        if ($update_result !== false) {
+            return [
+                'success' => true,
+                'changed' => true,
+            ];
+        }
+
+        $resolved_path = get_attached_file($attachment_id);
+        if (is_string($resolved_path) && wp_normalize_path($resolved_path) === $normalized_target_path) {
+            return [
+                'success' => true,
+                'changed' => true,
+            ];
+        }
+
+        $relative_upload_path = $this->get_relative_upload_path($target_path);
+        if ($relative_upload_path !== null) {
+            $meta_update = update_post_meta($attachment_id, '_wp_attached_file', $relative_upload_path);
+            if (
+                $meta_update !== false ||
+                (string) get_post_meta($attachment_id, '_wp_attached_file', true) === $relative_upload_path
+            ) {
+                return [
+                    'success' => true,
+                    'changed' => true,
+                ];
+            }
+        }
+
+        $this->logger->warning('attachment_path_sync_failed', [
+            'attachment_id' => $attachment_id,
+            'target_path' => $target_path,
+            'resolved_path' => is_string($resolved_path) ? $resolved_path : '',
+            'stored_relative_path' => (string) get_post_meta($attachment_id, '_wp_attached_file', true),
+        ]);
+
+        return [
+            'success' => false,
+            'error' => 'Failed to update attachment file path in WordPress metadata',
+        ];
+    }
+
     private function get_attachment_restore_path(int $attachment_id, string $mime_type): string
     {
         $current_path = get_attached_file($attachment_id);
@@ -634,6 +691,24 @@ final class Image_Restorer
         $filename = pathinfo($current_path, PATHINFO_FILENAME) . '.' . $desired_extension;
 
         return trailingslashit($directory) . wp_unique_filename($directory, $filename);
+    }
+
+    private function get_relative_upload_path(string $path): ?string
+    {
+        $uploads = wp_get_upload_dir();
+        $basedir = $uploads['basedir'] ?? '';
+        if (!is_string($basedir) || $basedir === '') {
+            return null;
+        }
+
+        $normalized_basedir = trailingslashit(wp_normalize_path($basedir));
+        $normalized_path = wp_normalize_path($path);
+
+        if (!str_starts_with($normalized_path, $normalized_basedir)) {
+            return null;
+        }
+
+        return ltrim(substr($normalized_path, strlen($normalized_basedir)), '/');
     }
 
     private function generate_attachment_metadata(int $attachment_id, string $file_path, string $mime_type): ?array
