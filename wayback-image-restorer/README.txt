@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.2 =
+* Fix plugin updates for the current repository layout by switching to explicit update metadata and packaged ZIP downloads
+
 = 1.0.1 =
 * Try legacy `.png`, `.jpg`, and `.jpeg` archive URLs when a missing image is now stored as `.webp`
 
@@ -68,6 +71,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.2 =
+Fixes automatic updates for installs of this plugin from GitHub-backed packages.
 
 = 1.0.1 =
 Adds Wayback lookup fallback for legacy PNG/JPG/JPEG versions of missing WebP images.

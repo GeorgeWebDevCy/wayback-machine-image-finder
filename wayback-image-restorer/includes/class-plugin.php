@@ -30,7 +30,7 @@ final class Wayback_Image_Restorer
     private function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.1';
+        $this->version = '1.0.2';
     }
 
     public function run(): void
@@ -53,13 +53,11 @@ final class Wayback_Image_Restorer
             return;
         }
 
-        $update_checker = PucFactory::buildUpdateChecker(
-            'https://github.com/GeorgeWebDevCy/wayback-machine-image-finder',
+        $GLOBALS['wayback_image_restorer_update_checker'] = PucFactory::buildUpdateChecker(
+            'https://raw.githubusercontent.com/GeorgeWebDevCy/wayback-machine-image-finder/main/update-info.json',
             __DIR__ . '/../wayback-image-restorer.php',
             'wayback-image-restorer'
         );
-
-        $update_checker->setBranch('main');
     }
 
     private function define_admin_hooks(): void
