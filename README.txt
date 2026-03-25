@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.11
+Stable tag: 1.0.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.12 =
+* Keep browser-detected broken media visible in scan results even when the follow-up Wayback archive lookup is slow or times out
+
 = 1.0.11 =
 * Respect the scan date range when browser-verifying media-library attachments so targeted scans can reach the relevant month faster
 
@@ -110,6 +113,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.12 =
+Ensures browser-detected broken media still appear in scan results when archive enrichment is delayed.
 
 = 1.0.11 =
 Makes browser-verified media scans respect the selected date range for faster targeted runs.

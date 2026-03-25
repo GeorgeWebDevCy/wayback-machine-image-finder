@@ -154,15 +154,37 @@
             $list.children().slice(5).remove();
         },
 
-        postAjax: function(data) {
+        postAjax: function(data, options) {
+            const settings = options || {};
             return new Promise(function(resolve, reject) {
                 $.ajax({
                     url: wirData.ajaxUrl,
                     type: 'POST',
                     data: data,
+                    timeout: settings.timeout || 30000,
                     success: resolve,
                     error: reject
                 });
+            });
+        },
+
+        createBrowserDetectedBrokenImages: function(items) {
+            const timestamp = new Date().toISOString();
+
+            return items.map(function(item) {
+                return {
+                    url: item.url,
+                    type: 'local',
+                    referenced_in: [{
+                        post_id: Number(item.attachment_id || 0),
+                        post_title: item.post_title || '',
+                        context: item.context || 'media_library'
+                    }],
+                    archive_found: false,
+                    archive_url: null,
+                    archive_timestamp: null,
+                    last_checked: timestamp
+                };
             });
         },
 
@@ -217,29 +239,35 @@
                 const brokenCandidates = await this.probeBrokenMediaCandidates(items, existingUrls);
 
                 if (brokenCandidates.length > 0) {
+                    let browserRecords = this.createBrowserDetectedBrokenImages(brokenCandidates);
+
                     try {
                         const enrichResponse = await this.postAjax({
                             action: 'wir_enrich_media_failures',
                             nonce: wirData.nonce,
                             items: JSON.stringify(brokenCandidates)
+                        }, {
+                            timeout: 20000
                         });
 
-                        if (enrichResponse && enrichResponse.success && enrichResponse.data && Array.isArray(enrichResponse.data.broken_images)) {
-                            enrichResponse.data.broken_images.forEach(function(image) {
-                                if (existingUrls.has(image.url)) {
-                                    return;
-                                }
-
-                                nextId += 1;
-                                image.id = nextId;
-                                verifiedData.broken_images.push(image);
-                                existingUrls.add(image.url);
-                                browserVerifiedBroken += 1;
-                            });
+                        if (enrichResponse && enrichResponse.success && enrichResponse.data && Array.isArray(enrichResponse.data.broken_images) && enrichResponse.data.broken_images.length > 0) {
+                            browserRecords = enrichResponse.data.broken_images;
                         }
                     } catch (error) {
-                        return verifiedData;
+                        browserRecords = this.createBrowserDetectedBrokenImages(brokenCandidates);
                     }
+
+                    browserRecords.forEach(function(image) {
+                        if (existingUrls.has(image.url)) {
+                            return;
+                        }
+
+                        nextId += 1;
+                        image.id = nextId;
+                        verifiedData.broken_images.push(image);
+                        existingUrls.add(image.url);
+                        browserVerifiedBroken += 1;
+                    });
                 }
 
                 hasMore = Boolean(batchResponse.data.has_more);
