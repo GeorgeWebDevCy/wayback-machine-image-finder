@@ -13,6 +13,11 @@ final class Wayback_Api
     private const CDX_API_URL = 'https://web.archive.org/cdx/search/cdx';
     private const MAX_RETRIES = 3;
     private const RETRY_DELAYS = [2, 4, 8];
+    private const ARCHIVE_EXTENSION_FALLBACKS = [
+        'webp' => ['png', 'jpg', 'jpeg'],
+        'jpg' => ['jpeg'],
+        'jpeg' => ['jpg'],
+    ];
 
     private int $timeout;
     private Resource_Manager $resources;
@@ -29,53 +34,29 @@ final class Wayback_Api
             return null;
         }
 
-        $params = [
-            'url' => $url,
-            'output' => 'json',
-            'filter' => 'statuscode:200',
-            'filter' => 'mimetype:image/.*',
-            'fl' => 'timestamp,original,statuscode,mimetype',
-            'limit' => 1,
-        ];
+        $last_error = null;
 
-        if ($target_date !== null) {
-            $date_formatted = $this->format_date_for_cdx($target_date);
-            if ($date_formatted) {
-                $params['from'] = $date_formatted;
+        foreach ($this->get_archive_lookup_candidates($url) as $candidate_url) {
+            $data = $this->query_cdx($candidate_url, 1, $target_date);
+
+            if (is_wp_error($data)) {
+                $last_error = $data;
+                continue;
+            }
+
+            if (!empty($data[0])) {
+                return $this->format_archive_record($data[0], $candidate_url);
             }
         }
 
-        $api_url = add_query_arg($params, self::CDX_API_URL);
-        $response = $this->make_request_with_retry($api_url);
-
-        if (is_wp_error($response)) {
+        if ($last_error instanceof \WP_Error) {
             Logger::get_instance()->warning('wayback_api_error', [
                 'url' => $url,
-                'error' => $response->get_error_message(),
+                'error' => $last_error->get_error_message(),
             ]);
-            return null;
         }
 
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-
-        if (empty($data) || !is_array($data) || count($data) < 2) {
-            return null;
-        }
-
-        array_shift($data);
-
-        if (empty($data[0])) {
-            return null;
-        }
-
-        return [
-            'timestamp' => $data[0][0] ?? '',
-            'original' => $data[0][1] ?? $url,
-            'statuscode' => $data[0][2] ?? '200',
-            'mimetype' => $data[0][3] ?? 'image/jpeg',
-            'archive_url' => $this->build_archive_url($url, $data[0][0] ?? ''),
-        ];
+        return null;
     }
 
     public function find_archives(string $url, int $limit = 10): array
@@ -84,44 +65,35 @@ final class Wayback_Api
             return [];
         }
 
-        $params = [
-            'url' => $url,
-            'output' => 'json',
-            'filter' => 'statuscode:200',
-            'filter' => 'mimetype:image/.*',
-            'fl' => 'timestamp,original,statuscode,mimetype',
-            'limit' => $limit,
-        ];
-
-        $api_url = add_query_arg($params, self::CDX_API_URL);
-        $response = $this->make_request_with_retry($api_url);
-
-        if (is_wp_error($response)) {
-            return [];
-        }
-
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-
-        if (empty($data) || !is_array($data) || count($data) < 2) {
-            return [];
-        }
-
-        array_shift($data);
-
         $archives = [];
-        foreach ($data as $item) {
-            if (!is_array($item) || empty($item[0])) {
+        $seen = [];
+
+        foreach ($this->get_archive_lookup_candidates($url) as $candidate_url) {
+            $data = $this->query_cdx($candidate_url, $limit);
+
+            if (is_wp_error($data)) {
                 continue;
             }
 
-            $archives[] = [
-                'timestamp' => $item[0] ?? '',
-                'original' => $item[1] ?? $url,
-                'statuscode' => $item[2] ?? '200',
-                'mimetype' => $item[3] ?? 'image/jpeg',
-                'archive_url' => $this->build_archive_url($url, $item[0] ?? ''),
-            ];
+            foreach ($data as $item) {
+                if (!is_array($item) || empty($item[0])) {
+                    continue;
+                }
+
+                $archive = $this->format_archive_record($item, $candidate_url);
+                $archive_key = ($archive['timestamp'] ?? '') . '|' . ($archive['original'] ?? '');
+
+                if (isset($seen[$archive_key])) {
+                    continue;
+                }
+
+                $seen[$archive_key] = true;
+                $archives[] = $archive;
+
+                if (count($archives) >= $limit) {
+                    break 2;
+                }
+            }
         }
 
         return $archives;
@@ -266,6 +238,27 @@ final class Wayback_Api
         return wp_safe_remote_request($url, $args);
     }
 
+    private function query_cdx(string $url, int $limit = 1, ?string $target_date = null): array|\WP_Error
+    {
+        $api_url = $this->build_cdx_query_url($url, $limit, $target_date);
+        $response = $this->make_request_with_retry($api_url);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+
+        if (empty($data) || !is_array($data) || count($data) < 2) {
+            return [];
+        }
+
+        array_shift($data);
+
+        return is_array($data) ? $data : [];
+    }
+
     private function build_archive_url(string $original_url, string $timestamp): string
     {
         $encoded_url = urlencode($original_url);
@@ -283,6 +276,70 @@ final class Wayback_Api
             return null;
         }
         return date('Ymd', $timestamp);
+    }
+
+    private function build_cdx_query_url(string $url, int $limit, ?string $target_date = null): string
+    {
+        $query_parts = [
+            'url=' . rawurlencode($url),
+            'output=json',
+            'filter=' . rawurlencode('statuscode:200'),
+            'filter=' . rawurlencode('mimetype:image/.*'),
+            'fl=' . rawurlencode('timestamp,original,statuscode,mimetype'),
+            'limit=' . rawurlencode((string) $limit),
+        ];
+
+        if ($target_date !== null) {
+            $date_formatted = $this->format_date_for_cdx($target_date);
+            if ($date_formatted) {
+                $query_parts[] = 'from=' . rawurlencode($date_formatted);
+            }
+        }
+
+        return self::CDX_API_URL . '?' . implode('&', $query_parts);
+    }
+
+    private function format_archive_record(array $record, string $lookup_url): array
+    {
+        $timestamp = $record[0] ?? '';
+        $original = $record[1] ?? $lookup_url;
+
+        return [
+            'timestamp' => $timestamp,
+            'original' => $original,
+            'statuscode' => $record[2] ?? '200',
+            'mimetype' => $record[3] ?? 'image/jpeg',
+            'archive_url' => $this->build_archive_url($original, $timestamp),
+            'lookup_url' => $lookup_url,
+        ];
+    }
+
+    private function get_archive_lookup_candidates(string $url): array
+    {
+        $candidates = [$url];
+        $path = parse_url($url, PHP_URL_PATH);
+
+        if (!is_string($path) || !preg_match('/\.([a-z0-9]+)$/i', $path, $matches)) {
+            return $candidates;
+        }
+
+        $current_extension = strtolower($matches[1]);
+        $fallback_extensions = self::ARCHIVE_EXTENSION_FALLBACKS[$current_extension] ?? [];
+
+        foreach ($fallback_extensions as $fallback_extension) {
+            $candidate = preg_replace(
+                '/\.' . preg_quote($current_extension, '/') . '(?=($|[?#]))/i',
+                '.' . $fallback_extension,
+                $url,
+                1
+            );
+
+            if (is_string($candidate) && !in_array($candidate, $candidates, true)) {
+                $candidates[] = $candidate;
+            }
+        }
+
+        return $candidates;
     }
 
     private function parse_content_type(string $content_type): string

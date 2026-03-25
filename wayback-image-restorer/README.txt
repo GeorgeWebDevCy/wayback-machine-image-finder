@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,10 +61,16 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.1 =
+* Try legacy `.png`, `.jpg`, and `.jpeg` archive URLs when a missing image is now stored as `.webp`
+
 = 1.0.0 =
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+Adds Wayback lookup fallback for legacy PNG/JPG/JPEG versions of missing WebP images.
 
 = 1.0.0 =
 Initial release of Wayback Image Restorer.
