@@ -57,6 +57,6 @@ final class Activator
 
     private static function set_version(): void
     {
-        update_option('wir_version', '1.0.2');
+        update_option('wir_version', '1.0.3');
     }
 }

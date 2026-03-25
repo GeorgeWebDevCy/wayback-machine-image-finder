@@ -16,7 +16,7 @@ final class Public_
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.2';
+        $this->version = '1.0.3';
     }
 
     public function enqueue_assets(): void
