@@ -154,6 +154,146 @@
             $list.children().slice(5).remove();
         },
 
+        postAjax: function(data) {
+            return new Promise(function(resolve, reject) {
+                $.ajax({
+                    url: wirData.ajaxUrl,
+                    type: 'POST',
+                    data: data,
+                    success: resolve,
+                    error: reject
+                });
+            });
+        },
+
+        runBrowserMediaVerification: async function(scanData, $status) {
+            if (!scanData || !scanData.scan_id) {
+                return scanData;
+            }
+
+            const verifiedData = $.extend(true, {}, scanData);
+            verifiedData.broken_images = Array.isArray(verifiedData.broken_images) ? verifiedData.broken_images : [];
+
+            const existingUrls = new Set(verifiedData.broken_images.map(function(image) {
+                return image.url;
+            }));
+
+            let nextId = verifiedData.broken_images.reduce(function(maxId, image) {
+                return Math.max(maxId, Number(image.id) || 0);
+            }, 0);
+
+            let offset = 0;
+            let hasMore = true;
+            let browserVerifiedBroken = 0;
+
+            while (hasMore) {
+                if ($status && $status.length) {
+                    $status.text(wirData.strings.scanStageBrowser || 'Verifying media library URLs from the browser...');
+                }
+
+                let batchResponse;
+                try {
+                    batchResponse = await this.postAjax({
+                        action: 'wir_get_media_candidates',
+                        nonce: wirData.nonce,
+                        offset: offset,
+                        limit: 40
+                    });
+                } catch (error) {
+                    return verifiedData;
+                }
+
+                if (!batchResponse || !batchResponse.success || !batchResponse.data) {
+                    return verifiedData;
+                }
+
+                const items = Array.isArray(batchResponse.data.items) ? batchResponse.data.items : [];
+                if (items.length === 0) {
+                    break;
+                }
+
+                const brokenCandidates = await this.probeBrokenMediaCandidates(items, existingUrls);
+
+                if (brokenCandidates.length > 0) {
+                    try {
+                        const enrichResponse = await this.postAjax({
+                            action: 'wir_enrich_media_failures',
+                            nonce: wirData.nonce,
+                            items: JSON.stringify(brokenCandidates)
+                        });
+
+                        if (enrichResponse && enrichResponse.success && enrichResponse.data && Array.isArray(enrichResponse.data.broken_images)) {
+                            enrichResponse.data.broken_images.forEach(function(image) {
+                                if (existingUrls.has(image.url)) {
+                                    return;
+                                }
+
+                                nextId += 1;
+                                image.id = nextId;
+                                verifiedData.broken_images.push(image);
+                                existingUrls.add(image.url);
+                                browserVerifiedBroken += 1;
+                            });
+                        }
+                    } catch (error) {
+                        return verifiedData;
+                    }
+                }
+
+                hasMore = Boolean(batchResponse.data.has_more);
+                offset = Number(batchResponse.data.next_offset || (offset + items.length));
+            }
+
+            verifiedData.stats = verifiedData.stats || {};
+            verifiedData.stats.images_broken = verifiedData.broken_images.length;
+            verifiedData.stats.browser_verified_broken = browserVerifiedBroken;
+
+            return verifiedData;
+        },
+
+        probeBrokenMediaCandidates: async function(items, existingUrls) {
+            const broken = [];
+            const concurrency = 5;
+
+            for (let index = 0; index < items.length; index += concurrency) {
+                const chunk = items.slice(index, index + concurrency);
+                const results = await Promise.all(chunk.map(async function(item) {
+                    if (!item || !item.url || existingUrls.has(item.url)) {
+                        return null;
+                    }
+
+                    const isBroken = await this.isPublicMediaUrlBroken(item.url);
+                    return isBroken ? item : null;
+                }, this));
+
+                results.forEach(function(item) {
+                    if (item) {
+                        broken.push(item);
+                    }
+                });
+            }
+
+            return broken;
+        },
+
+        isPublicMediaUrlBroken: async function(url) {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers: {
+                        'Range': 'bytes=0-255'
+                    }
+                });
+
+                const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+                return !response.ok || !(contentType.startsWith('image/') || contentType === 'application/octet-stream');
+            } catch (error) {
+                return true;
+            }
+        },
+
         startScan: function() {
             const $btn = $('#wir-start-scan');
             const $status = $('#wir-scan-status');
@@ -188,9 +328,17 @@
                     if (response.success) {
                         this.stopScanProgress();
                         this.currentScanId = response.data.scan_id;
-                        this.currentResults = response.data;
-                        this.displayResults(response.data);
-                        $status.addClass('success').text(wirData.strings.scanComplete || 'Scan complete!');
+                        this.runBrowserMediaVerification(response.data, $status)
+                            .then($.proxy(function(verifiedData) {
+                                this.currentResults = verifiedData;
+                                this.displayResults(verifiedData);
+                                $status.addClass('success').text(wirData.strings.scanComplete || 'Scan complete!');
+                            }, this))
+                            .catch($.proxy(function() {
+                                this.currentResults = response.data;
+                                this.displayResults(response.data);
+                                $status.addClass('success').text(wirData.strings.scanComplete || 'Scan complete!');
+                            }, this));
                     } else {
                         this.stopScanProgress();
                         $('#wir-scan-results').html('<p class="description">Scan failed. Check the plugin logs for more details.</p>');
@@ -296,6 +444,10 @@
 
             if (stats.scan_stopped_early) {
                 html += '<p class="description" style="color: #dba617; margin-top: 15px;">Note: Scan was stopped early due to resource limits. Consider scanning fewer posts.</p>';
+            }
+
+            if (Number(stats.browser_verified_broken || 0) > 0) {
+                html += `<p class="description" style="margin-top: 15px;">Browser-verified media failures: ${Number(stats.browser_verified_broken)}.</p>`;
             }
 
             if (durationSeconds !== null) {

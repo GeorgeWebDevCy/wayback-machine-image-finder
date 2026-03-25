@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.9
+Stable tag: 1.0.10
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,10 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.10 =
+* Add a browser-verified media-library scan pass for attachments that fail in real page loads but look healthy to server-side loopback requests
+* Enrich browser-detected media failures with Wayback archive matches during the same scan
+
 = 1.0.9 =
 * Detect same-site upload URLs as broken when the public URL returns forbidden or non-image responses even if a file still exists on disk
 * Resolve upload-relative paths from WordPress' uploads base URL before falling back to HTTP checks
@@ -103,6 +107,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.10 =
+Improves detection for media-library images that break in browsers but slip past server-side URL checks.
 
 = 1.0.9 =
 Improves detection for same-site uploads that now return forbidden or non-image responses, including converted WebP media.

@@ -16,7 +16,7 @@ final class Admin
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.9';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.10';
     }
 
     public function add_admin_menu(): void
@@ -175,14 +175,15 @@ final class Admin
         wp_localize_script('wir-admin', 'wirData', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('wir_nonce'),
-            'strings' => [
-                'scanning' => __('Scanning...', 'wayback-image-restorer'),
-                'scanComplete' => __('Scan complete!', 'wayback-image-restorer'),
-                'scanInProgress' => __('Scan in progress', 'wayback-image-restorer'),
-                'scanElapsed' => __('Elapsed', 'wayback-image-restorer'),
-                'scanActivityTitle' => __('Recent Scan Activity', 'wayback-image-restorer'),
-                'scanActivityLoading' => __('Loading scan activity...', 'wayback-image-restorer'),
-                'scanActivityEmpty' => __('No scan activity was recorded for this run.', 'wayback-image-restorer'),
+                'strings' => [
+                    'scanning' => __('Scanning...', 'wayback-image-restorer'),
+                    'scanComplete' => __('Scan complete!', 'wayback-image-restorer'),
+                    'scanInProgress' => __('Scan in progress', 'wayback-image-restorer'),
+                    'scanElapsed' => __('Elapsed', 'wayback-image-restorer'),
+                    'scanStageBrowser' => __('Verifying media library URLs from the browser...', 'wayback-image-restorer'),
+                    'scanActivityTitle' => __('Recent Scan Activity', 'wayback-image-restorer'),
+                    'scanActivityLoading' => __('Loading scan activity...', 'wayback-image-restorer'),
+                    'scanActivityEmpty' => __('No scan activity was recorded for this run.', 'wayback-image-restorer'),
                 'scanActivityError' => __('Unable to load scan activity.', 'wayback-image-restorer'),
                 'scanStagePrepare' => __('Preparing scan request...', 'wayback-image-restorer'),
                 'scanStagePosts' => __('Scanning posts and pages for image references...', 'wayback-image-restorer'),

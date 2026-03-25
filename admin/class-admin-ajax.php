@@ -86,6 +86,108 @@ final class Ajax
         wp_send_json_success($results);
     }
 
+    public function handle_get_media_candidates(): void
+    {
+        check_ajax_referer('wir_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $offset = isset($_POST['offset']) ? max(0, absint($_POST['offset'])) : 0;
+        $limit = isset($_POST['limit']) ? max(1, min(100, absint($_POST['limit']))) : 40;
+
+        $attachments = get_posts([
+            'post_type' => 'attachment',
+            'post_mime_type' => 'image',
+            'posts_per_page' => $limit,
+            'post_status' => 'inherit',
+            'orderby' => 'ID',
+            'order' => 'ASC',
+            'offset' => $offset,
+        ]);
+
+        $items = [];
+        foreach ($attachments as $attachment) {
+            $url = wp_get_attachment_url($attachment->ID);
+            if (!$url) {
+                continue;
+            }
+
+            $items[] = [
+                'attachment_id' => (int) $attachment->ID,
+                'url' => $url,
+                'post_title' => get_the_title($attachment->ID),
+                'context' => 'media_library',
+                'target_date' => $attachment->post_date,
+            ];
+        }
+
+        wp_send_json_success([
+            'items' => $items,
+            'next_offset' => $offset + count($attachments),
+            'has_more' => count($attachments) === $limit,
+        ]);
+    }
+
+    public function handle_enrich_media_failures(): void
+    {
+        check_ajax_referer('wir_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $decoded = json_decode((string) wp_unslash($_POST['items'] ?? ''), true);
+        if (!is_array($decoded)) {
+            wp_send_json_error(['message' => __('No media items provided', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $api = new \Wayback_Image_Restorer\Wayback_Api();
+        $broken_images = [];
+        $seen = [];
+
+        foreach ($decoded as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $url = esc_url_raw((string) ($item['url'] ?? ''));
+            if ($url === '' || isset($seen[$url])) {
+                continue;
+            }
+
+            $attachment_id = absint($item['attachment_id'] ?? 0);
+            $post_title = sanitize_text_field((string) ($item['post_title'] ?? ''));
+            $context = sanitize_text_field((string) ($item['context'] ?? 'media_library'));
+            $target_date = !empty($item['target_date']) ? sanitize_text_field((string) $item['target_date']) : null;
+
+            $archive_info = $api->find_archive($url, $target_date);
+            $broken_images[] = [
+                'id' => count($broken_images) + 1,
+                'url' => $url,
+                'type' => 'local',
+                'referenced_in' => [[
+                    'post_id' => $attachment_id,
+                    'post_title' => $post_title,
+                    'context' => $context,
+                ]],
+                'archive_found' => $archive_info !== null,
+                'archive_url' => $archive_info['archive_url'] ?? null,
+                'archive_timestamp' => $archive_info['timestamp'] ?? null,
+                'last_checked' => current_time('c'),
+            ];
+            $seen[$url] = true;
+        }
+
+        wp_send_json_success([
+            'broken_images' => $broken_images,
+        ]);
+    }
+
     public function handle_restore(): void
     {
         check_ajax_referer('wir_nonce', 'nonce');

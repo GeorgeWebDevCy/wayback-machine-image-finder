@@ -30,7 +30,7 @@ final class Wayback_Image_Restorer
     private function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.9';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.10';
     }
 
     public function run(): void
@@ -72,6 +72,8 @@ final class Wayback_Image_Restorer
         $ajax = new Admin\Ajax();
         $this->loader->add_action('wp_ajax_wir_scan', $ajax, 'handle_scan');
         $this->loader->add_action('wp_ajax_wir_get_results', $ajax, 'handle_get_results');
+        $this->loader->add_action('wp_ajax_wir_get_media_candidates', $ajax, 'handle_get_media_candidates');
+        $this->loader->add_action('wp_ajax_wir_enrich_media_failures', $ajax, 'handle_enrich_media_failures');
         $this->loader->add_action('wp_ajax_wir_restore', $ajax, 'handle_restore');
         $this->loader->add_action('wp_ajax_wir_bulk_restore', $ajax, 'handle_bulk_restore');
         $this->loader->add_action('wp_ajax_wir_get_logs', $ajax, 'handle_get_logs');

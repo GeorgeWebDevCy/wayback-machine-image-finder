@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Plugin Name:       Wayback Image Restorer
  * Plugin URI:        https://github.com/GeorgeWebDevCy/wayback-machine-image-finder
  * Description:       Find missing images and restore them from the Wayback Machine
- * Version:           1.0.9
+ * Version:           1.0.10
  * Update URI:        https://github.com/GeorgeWebDevCy/wayback-machine-image-finder
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -25,7 +25,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('WIR_VERSION')) {
-    define('WIR_VERSION', '1.0.9');
+    define('WIR_VERSION', '1.0.10');
 }
 
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
