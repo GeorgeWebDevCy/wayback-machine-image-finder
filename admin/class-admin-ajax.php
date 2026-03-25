@@ -29,7 +29,7 @@ final class Ajax
         $args = [];
         
         if (isset($_POST['dry_run'])) {
-            $args['dry_run'] = (bool) $_POST['dry_run'];
+            $args['dry_run'] = $this->get_request_bool('dry_run');
         }
         
         if (isset($_POST['post_types']) && is_array($_POST['post_types'])) {
@@ -47,11 +47,15 @@ final class Ajax
         $scanner = new \Wayback_Image_Restorer\Image_Scanner();
         $results = $scanner->scan($args);
 
+        set_transient('wir_current_scan_id', $scanner->get_scan_id(), HOUR_IN_SECONDS);
         set_transient('wir_last_scan_id', $scanner->get_scan_id(), HOUR_IN_SECONDS);
         update_option('wir_last_scan_id', $scanner->get_scan_id());
 
         wp_send_json_success([
             'scan_id' => $results['scan_id'],
+            'started_at' => $results['started_at'],
+            'completed_at' => $results['completed_at'],
+            'duration_seconds' => $results['duration_seconds'],
             'stats' => $results['stats'],
             'broken_images' => $results['broken_images'],
         ]);
@@ -93,7 +97,8 @@ final class Ajax
 
         $image_url = esc_url_raw($_POST['image_url'] ?? '');
         $archive_url = isset($_POST['archive_url']) ? esc_url_raw($_POST['archive_url']) : null;
-        $dry_run = (bool) ($_POST['dry_run'] ?? false);
+        $dry_run = $this->get_request_bool('dry_run');
+        $referenced_in = $this->get_referenced_in_payload($image_url);
 
         if (empty($image_url)) {
             wp_send_json_error(['message' => __('No image URL provided', 'wayback-image-restorer')]);
@@ -105,7 +110,7 @@ final class Ajax
             'url' => $image_url,
             'archive_url' => $archive_url,
             'dry_run' => $dry_run,
-            'referenced_in' => isset($_POST['referenced_in']) ? json_decode(stripslashes($_POST['referenced_in']), true) : [],
+            'referenced_in' => $referenced_in,
         ]);
 
         if ($result['success']) {
@@ -128,7 +133,7 @@ final class Ajax
             ? array_map('absint', $_POST['image_ids'])
             : [];
         
-        $dry_run = (bool) ($_POST['dry_run'] ?? false);
+        $dry_run = $this->get_request_bool('dry_run');
 
         if (empty($image_ids)) {
             wp_send_json_error(['message' => __('No images selected', 'wayback-image-restorer')]);
@@ -138,7 +143,11 @@ final class Ajax
         $restorer = new \Wayback_Image_Restorer\Image_Restorer();
         $result = $restorer->bulk_restore($image_ids, $dry_run);
 
-        wp_send_json_success($result);
+        if ($result['success']) {
+            wp_send_json_success($result);
+        }
+
+        wp_send_json_error($result);
     }
 
     public function handle_get_logs(): void
@@ -224,5 +233,54 @@ final class Ajax
 
         echo $csv;
         wp_die();
+    }
+
+    private function get_request_bool(string $key, bool $default = false): bool
+    {
+        if (!array_key_exists($key, $_POST)) {
+            return $default;
+        }
+
+        $value = wp_unslash($_POST[$key]);
+        $parsed = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+        return $parsed ?? $default;
+    }
+
+    private function get_referenced_in_payload(string $image_url): array
+    {
+        if (isset($_POST['referenced_in'])) {
+            $decoded = json_decode((string) wp_unslash($_POST['referenced_in']), true);
+            if (is_array($decoded) && !empty($decoded)) {
+                return $decoded;
+            }
+        }
+
+        if ($image_url === '') {
+            return [];
+        }
+
+        $scan_ids = array_unique(array_filter([
+            (string) get_transient('wir_current_scan_id'),
+            (string) get_option('wir_last_scan_id', ''),
+        ]));
+
+        foreach ($scan_ids as $scan_id) {
+            $results = get_transient('wir_last_scan_' . $scan_id);
+            if (!is_array($results) || empty($results['broken_images']) || !is_array($results['broken_images'])) {
+                continue;
+            }
+
+            foreach ($results['broken_images'] as $image) {
+                if (($image['url'] ?? '') !== $image_url) {
+                    continue;
+                }
+
+                $referenced_in = $image['referenced_in'] ?? [];
+                return is_array($referenced_in) ? $referenced_in : [];
+            }
+        }
+
+        return [];
     }
 }

@@ -83,11 +83,22 @@ final class Image_Restorer
             ];
         }
 
-        $import_result = $this->import_to_media_library(
-            $download_result['file'],
-            $download_result['mime_type'],
-            $image_url
-        );
+        $existing_attachment_id = $this->resolve_existing_attachment_id($image_url, $referenced_in);
+
+        if ($existing_attachment_id > 0) {
+            $import_result = $this->restore_existing_attachment(
+                $existing_attachment_id,
+                $download_result['file'],
+                $download_result['mime_type'],
+                $image_url
+            );
+        } else {
+            $import_result = $this->import_to_media_library(
+                $download_result['file'],
+                $download_result['mime_type'],
+                $image_url
+            );
+        }
 
         if (!$import_result['success']) {
             @unlink($download_result['file']);
@@ -103,10 +114,13 @@ final class Image_Restorer
             ];
         }
 
-        $new_attachment_id = $import_result['attachment_id'];
-        $new_url = wp_get_attachment_url($new_attachment_id);
+        $new_attachment_id = (int) $import_result['attachment_id'];
+        $new_url = $import_result['url'] ?? wp_get_attachment_url($new_attachment_id);
 
-        $update_result = $this->update_post_references($image_url, $new_url, $referenced_in);
+        $update_result = ['updated' => 0, 'failed' => 0];
+        if (is_string($new_url) && $new_url !== '' && $new_url !== $image_url) {
+            $update_result = $this->update_post_references($image_url, $new_url, $referenced_in, $new_attachment_id);
+        }
 
         @unlink($download_result['file']);
 
@@ -240,14 +254,16 @@ final class Image_Restorer
 
     private function generate_filename(string $url, string $mime_type): string
     {
-        $pathinfo = pathinfo(parse_url($url, PHP_URL_PATH));
+        $path = parse_url($url, PHP_URL_PATH);
+        $pathinfo = pathinfo(is_string($path) ? $path : '');
         $original_name = $pathinfo['filename'] ?? 'restored-image';
-        $original_ext = $pathinfo['extension'] ?? $this->mime_type_to_extension($mime_type);
+        $original_ext = strtolower((string) ($pathinfo['extension'] ?? ''));
+        $final_ext = $this->get_preferred_extension($original_ext, $mime_type);
 
         $timestamp = date('Y-m-d-His');
         $unique_id = substr(uniqid(), -6);
 
-        return sanitize_file_name("{$original_name}-restored-{$timestamp}-{$unique_id}.{$original_ext}");
+        return sanitize_file_name("{$original_name}-restored-{$timestamp}-{$unique_id}.{$final_ext}");
     }
 
     private function mime_type_to_extension(string $mime_type): string
@@ -272,7 +288,12 @@ final class Image_Restorer
         update_post_meta($attachment_id, '_wir_restored_from', 'wayback_machine');
     }
 
-    private function update_post_references(string $old_url, string $new_url, array $referenced_in): array
+    private function update_post_references(
+        string $old_url,
+        string $new_url,
+        array $referenced_in,
+        int $replacement_attachment_id = 0
+    ): array
     {
         $result = [
             'updated' => 0,
@@ -293,8 +314,10 @@ final class Image_Restorer
                 continue;
             }
 
-            if ($context === 'featured') {
-                $update_result = $this->update_featured_image($post_id, $old_url, $new_url);
+            if ($context === 'media_library') {
+                $update_result = $replacement_attachment_id > 0 && $replacement_attachment_id === $post_id;
+            } elseif ($context === 'featured') {
+                $update_result = $this->update_featured_image($post_id, $old_url, $new_url, $replacement_attachment_id);
             } else {
                 $update_result = $this->update_post_content($post_id, $old_url, $new_url);
             }
@@ -340,11 +363,20 @@ final class Image_Restorer
         return false;
     }
 
-    private function update_featured_image(int $post_id, string $old_url, string $new_url): bool
+    private function update_featured_image(
+        int $post_id,
+        string $old_url,
+        string $new_url,
+        int $replacement_attachment_id = 0
+    ): bool
     {
         $thumbnail_id = get_post_thumbnail_id($post_id);
         if (!$thumbnail_id) {
             return false;
+        }
+
+        if ($replacement_attachment_id > 0 && $thumbnail_id === $replacement_attachment_id) {
+            return true;
         }
 
         $thumbnail_url = wp_get_attachment_url($thumbnail_id);
@@ -352,7 +384,9 @@ final class Image_Restorer
             return false;
         }
 
-        $new_attachment_id = attachment_url_to_postid($new_url);
+        $new_attachment_id = $replacement_attachment_id > 0
+            ? $replacement_attachment_id
+            : attachment_url_to_postid($new_url);
         if (!$new_attachment_id) {
             return false;
         }
@@ -370,9 +404,9 @@ final class Image_Restorer
 
     public function bulk_restore(array $image_ids, bool $dry_run = false): array
     {
-        $scan_id = get_transient('wir_current_scan_id');
+        $scan_id = (string) get_transient('wir_current_scan_id');
         if (!$scan_id) {
-            $scan_id = get_option('wir_last_scan_id');
+            $scan_id = (string) get_option('wir_last_scan_id', '');
         }
 
         if (!$scan_id) {
@@ -382,13 +416,7 @@ final class Image_Restorer
             ];
         }
 
-        $scan_data = null;
-        for ($i = 0; $i < 3600; $i++) {
-            $scan_data = get_transient('wir_last_scan_' . $scan_id);
-            if ($scan_data) {
-                break;
-            }
-        }
+        $scan_data = $this->get_scan_results($scan_id);
 
         if (!$scan_data) {
             return [
@@ -418,7 +446,7 @@ final class Image_Restorer
 
             $image_data = null;
             foreach ($scan_data['broken_images'] as $img) {
-                if ($img['id'] == $image_id) {
+                if ((int) ($img['id'] ?? 0) === (int) $image_id) {
                     $image_data = $img;
                     break;
                 }
@@ -464,5 +492,184 @@ final class Image_Restorer
         ]);
 
         return $result;
+    }
+
+    private function get_preferred_extension(string $original_extension, string $mime_type): string
+    {
+        $mime_extension = $this->mime_type_to_extension($mime_type);
+
+        if ($original_extension !== '' && $this->extensions_match($original_extension, $mime_extension)) {
+            return $original_extension;
+        }
+
+        return $mime_extension;
+    }
+
+    private function extensions_match(string $first, string $second): bool
+    {
+        $first = strtolower($first);
+        $second = strtolower($second);
+
+        if ($first === $second) {
+            return true;
+        }
+
+        return in_array($first, ['jpg', 'jpeg'], true) && in_array($second, ['jpg', 'jpeg'], true);
+    }
+
+    private function resolve_existing_attachment_id(string $image_url, array $referenced_in): int
+    {
+        $attachment_id = attachment_url_to_postid($image_url);
+        if ($attachment_id > 0) {
+            return (int) $attachment_id;
+        }
+
+        foreach ($referenced_in as $reference) {
+            if (($reference['context'] ?? '') !== 'media_library') {
+                continue;
+            }
+
+            $post_id = (int) ($reference['post_id'] ?? 0);
+            if ($post_id > 0 && get_post_type($post_id) === 'attachment') {
+                return $post_id;
+            }
+        }
+
+        return 0;
+    }
+
+    private function restore_existing_attachment(
+        int $attachment_id,
+        string $downloaded_file,
+        string $mime_type,
+        string $source_url
+    ): array {
+        if ($this->resources->should_stop('restore_existing_attachment')) {
+            return [
+                'success' => false,
+                'error' => 'Resource limit reached',
+            ];
+        }
+
+        $target_path = $this->get_attachment_restore_path($attachment_id, $mime_type);
+        if ($target_path === '') {
+            return [
+                'success' => false,
+                'error' => 'Attachment file path could not be resolved',
+            ];
+        }
+
+        $target_dir = dirname($target_path);
+        if (!file_exists($target_dir) && !wp_mkdir_p($target_dir)) {
+            return [
+                'success' => false,
+                'error' => 'Failed to create attachment directory',
+            ];
+        }
+
+        if (!@copy($downloaded_file, $target_path)) {
+            return [
+                'success' => false,
+                'error' => 'Failed to restore attachment file',
+            ];
+        }
+
+        clearstatcache(true, $target_path);
+
+        if (update_attached_file($attachment_id, $target_path) === false) {
+            return [
+                'success' => false,
+                'error' => 'Failed to update attachment file path',
+            ];
+        }
+
+        wp_update_post([
+            'ID' => $attachment_id,
+            'post_mime_type' => $mime_type,
+        ]);
+
+        $metadata = $this->generate_attachment_metadata($attachment_id, $target_path, $mime_type);
+        if ($metadata !== null) {
+            wp_update_attachment_metadata($attachment_id, $metadata);
+        }
+
+        $this->update_attachment_meta($attachment_id, $source_url);
+
+        $attachment_url = wp_get_attachment_url($attachment_id);
+        if (!$attachment_url) {
+            return [
+                'success' => false,
+                'error' => 'Failed to resolve restored attachment URL',
+            ];
+        }
+
+        $this->logger->info('attachment_restored_in_place', [
+            'attachment_id' => $attachment_id,
+            'file_path' => $target_path,
+            'mime_type' => $mime_type,
+        ]);
+
+        return [
+            'success' => true,
+            'attachment_id' => $attachment_id,
+            'url' => $attachment_url,
+        ];
+    }
+
+    private function get_attachment_restore_path(int $attachment_id, string $mime_type): string
+    {
+        $current_path = get_attached_file($attachment_id);
+        if (!is_string($current_path) || $current_path === '') {
+            return '';
+        }
+
+        $desired_extension = $this->mime_type_to_extension($mime_type);
+        $current_extension = strtolower((string) pathinfo($current_path, PATHINFO_EXTENSION));
+
+        if ($this->extensions_match($current_extension, $desired_extension)) {
+            return $current_path;
+        }
+
+        $directory = dirname($current_path);
+        $filename = pathinfo($current_path, PATHINFO_FILENAME) . '.' . $desired_extension;
+
+        return trailingslashit($directory) . wp_unique_filename($directory, $filename);
+    }
+
+    private function generate_attachment_metadata(int $attachment_id, string $file_path, string $mime_type): ?array
+    {
+        if (!function_exists('wp_generate_attachment_metadata')) {
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+        }
+
+        if (!function_exists('wp_generate_attachment_metadata')) {
+            return null;
+        }
+
+        if ($mime_type === 'image/svg+xml') {
+            return [];
+        }
+
+        $metadata = wp_generate_attachment_metadata($attachment_id, $file_path);
+
+        return is_array($metadata) ? $metadata : [];
+    }
+
+    private function get_scan_results(string $scan_id): ?array
+    {
+        $scan_ids = array_unique(array_filter([
+            $scan_id,
+            (string) get_transient('wir_current_scan_id'),
+            (string) get_option('wir_last_scan_id', ''),
+        ]));
+
+        foreach ($scan_ids as $candidate_scan_id) {
+            $scan_data = get_transient('wir_last_scan_' . $candidate_scan_id);
+            if (is_array($scan_data) && !empty($scan_data['broken_images']) && is_array($scan_data['broken_images'])) {
+                return $scan_data;
+            }
+        }
+
+        return null;
     }
 }

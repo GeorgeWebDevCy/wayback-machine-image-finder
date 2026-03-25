@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.4
+Stable tag: 1.0.5
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -38,7 +38,7 @@ Wayback Image Restorer helps you find and restore images that are broken or miss
 
 1. Upload the `wayback-image-restorer` folder to `/wp-content/plugins/`
 2. Activate the plugin through the 'Plugins' menu in WordPress
-3. Navigate to Tools > Wayback Image Restorer
+3. Open Wayback Image Restorer from its top-level WordPress admin menu
 4. Configure your scan settings and click "Start Scan"
 
 == Frequently Asked Questions ==
@@ -61,6 +61,13 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.5 =
+* Fix real restore requests so disabling Dry Run actually performs restores
+* Repair missing media-library attachments in place instead of only importing new files
+* Scan all image attachments in batches instead of stopping after the first 100
+* Fix scan duration and posts-scanned reporting details
+* Respect unlimited PHP execution time correctly and use the configured HTTP timeout setting
+
 = 1.0.4 =
 * Give the plugin its own top-level WordPress admin menu
 
@@ -77,6 +84,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.5 =
+Fixes restore execution, media-library repair handling, scan coverage, and timeout behavior.
 
 = 1.0.4 =
 Adds a dedicated top-level admin menu for Wayback Image Restorer.

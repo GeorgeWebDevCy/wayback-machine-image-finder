@@ -24,7 +24,7 @@ final class Resource_Manager
             $this->max_memory_mb = (int) filter_var($memory_limit, FILTER_SANITIZE_NUMBER_INT);
         }
 
-        $this->max_execution_time = (int) ini_get('max_execution_time');
+        $this->max_execution_time = max(0, (int) ini_get('max_execution_time'));
         $this->batch_delay_ms = 500;
         $this->low_resource_mode = $this->detect_low_resource_server();
     }
@@ -37,7 +37,7 @@ final class Resource_Manager
             return true;
         }
 
-        if ($this->max_execution_time <= 30) {
+        if ($this->max_execution_time > 0 && $this->max_execution_time <= 30) {
             return true;
         }
 
@@ -50,11 +50,31 @@ final class Resource_Manager
 
     public function get_timeout(): int
     {
-        if ($this->low_resource_mode) {
-            return min(15, $this->max_execution_time - 5);
+        if ($this->max_execution_time <= 0) {
+            return 0;
         }
-        
-        return min(30, $this->max_execution_time - 10);
+
+        $buffer = $this->low_resource_mode ? 3 : 5;
+        $buffer = min($buffer, max(1, $this->max_execution_time - 1));
+        $budget = max(1, $this->max_execution_time - $buffer);
+
+        if ($this->low_resource_mode) {
+            return min(15, $budget);
+        }
+
+        return min(30, $budget);
+    }
+
+    public function get_request_timeout(): int
+    {
+        $configured_timeout = (int) Settings::get('timeout_seconds', 30);
+        $configured_timeout = max(5, min(120, $configured_timeout > 0 ? $configured_timeout : 30));
+
+        if ($this->max_execution_time <= 0) {
+            return $configured_timeout;
+        }
+
+        return min($configured_timeout, max(5, $this->max_execution_time - 1));
     }
 
     public function should_stop(string $reason = ''): bool
@@ -101,11 +121,19 @@ final class Resource_Manager
 
     public function time_exhausted(): bool
     {
+        if ($this->max_execution_time <= 0) {
+            return false;
+        }
+
         $timeout = $this->get_timeout();
+        if ($timeout <= 0) {
+            return false;
+        }
+
         $start_time = defined('WIR_START_TIME') ? WIR_START_TIME : microtime(true);
         $elapsed = microtime(true) - $start_time;
 
-        return ($elapsed + 5) >= $timeout;
+        return $elapsed >= $timeout;
     }
 
     private function get_memory_limit(): int
@@ -160,6 +188,7 @@ final class Resource_Manager
             'memory_used_mb' => round(memory_get_usage(true) / 1024 / 1024, 2),
             'max_execution_time' => $this->max_execution_time,
             'timeout' => $this->get_timeout(),
+            'request_timeout' => $this->get_request_timeout(),
             'batch_delay_ms' => $this->get_batch_delay(),
             'batch_size' => $this->get_batch_size(),
         ];

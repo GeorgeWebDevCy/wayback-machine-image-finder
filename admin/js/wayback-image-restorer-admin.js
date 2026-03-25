@@ -109,6 +109,7 @@
         displayResults: function(data) {
             const stats = data.stats;
             const brokenImages = data.broken_images;
+            const durationSeconds = this.getDurationSeconds(data);
             
             let html = `
                 <div class="wir-stats-summary">
@@ -174,7 +175,7 @@
                                 </span>
                             </td>
                             <td class="wir-actions-cell">
-                                ${img.archive_found ? '<button class="button wir-restore-single" data-url="' + img.url + '" data-archive="' + img.archive_url + '">Restore</button>' : ''}
+                                ${img.archive_found ? '<button class="button wir-restore-single" data-id="' + img.id + '">Restore</button>' : ''}
                                 <button class="button wir-ignore" data-id="${img.id}">Ignore</button>
                             </td>
                         </tr>
@@ -194,7 +195,9 @@
                 html += '<p class="description" style="color: #dba617; margin-top: 15px;">Note: Scan was stopped early due to resource limits. Consider scanning fewer posts.</p>';
             }
 
-            html += `<p class="description" style="margin-top: 15px;">Duration: ${data.duration_seconds} seconds</p>`;
+            if (durationSeconds !== null) {
+                html += `<p class="description" style="margin-top: 15px;">Duration: ${durationSeconds} seconds</p>`;
+            }
 
             $('#wir-scan-results').html(html);
 
@@ -209,7 +212,7 @@
 
             $('.wir-restore-single').on('click', $.proxy(function(e) {
                 const $btn = $(e.currentTarget);
-                this.restoreImage($btn.data('url'), $btn.data('archive'));
+                this.restoreImage(Number($btn.data('id')), $btn);
             }, this));
 
             $('#wir-restore-selected').on('click', $.proxy(function() {
@@ -225,6 +228,21 @@
         formatTimestamp: function(ts) {
             if (!ts || ts.length < 8) return 'Unknown';
             return ts.substring(0, 4) + '-' + ts.substring(4, 6) + '-' + ts.substring(6, 8);
+        },
+
+        getDurationSeconds: function(data) {
+            const value = Number(data.duration_seconds);
+            return Number.isFinite(value) ? value : null;
+        },
+
+        getImageById: function(imageId) {
+            if (!this.currentResults || !Array.isArray(this.currentResults.broken_images)) {
+                return null;
+            }
+
+            return this.currentResults.broken_images.find(function(img) {
+                return Number(img.id) === Number(imageId);
+            }) || null;
         },
 
         updateSelectedCount: function() {
@@ -250,16 +268,22 @@
             $('#wir-confirm-modal').show();
         },
 
-        restoreImage: function(imageUrl, archiveUrl) {
+        restoreImage: function(imageId, $btn) {
+            const image = this.getImageById(imageId);
+            if (!image) {
+                alert('Image data is no longer available. Please run the scan again.');
+                return;
+            }
+
             const data = {
                 action: 'wir_restore',
                 nonce: wirData.nonce,
-                image_url: imageUrl,
-                archive_url: archiveUrl,
-                dry_run: $('#wir_dry_run').is(':checked')
+                image_url: image.url,
+                archive_url: image.archive_url,
+                dry_run: $('#wir_dry_run').is(':checked'),
+                referenced_in: JSON.stringify(image.referenced_in || [])
             };
 
-            const $btn = $('.wir-restore-single[data-url="' + imageUrl + '"]');
             $btn.prop('disabled', true).text('Restoring...');
 
             $.ajax({

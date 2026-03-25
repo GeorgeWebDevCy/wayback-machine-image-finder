@@ -30,7 +30,7 @@ final class Wayback_Image_Restorer
     private function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.4';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.5';
     }
 
     public function run(): void
@@ -103,11 +103,11 @@ final class Wayback_Image_Restorer
 
     public function get_plugin_dir(): string
     {
-        return plugin_dir_path(__FILE__);
+        return plugin_dir_path(__DIR__ . '/../wayback-image-restorer.php');
     }
 
     public function get_plugin_url(): string
     {
-        return plugin_dir_url(__FILE__);
+        return plugin_dir_url(__DIR__ . '/../wayback-image-restorer.php');
     }
 }

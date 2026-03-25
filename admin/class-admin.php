@@ -16,7 +16,7 @@ final class Admin
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.4';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.5';
     }
 
     public function add_admin_menu(): void
@@ -155,16 +155,18 @@ final class Admin
             return;
         }
 
+        $plugin_url = plugin_dir_url(__DIR__ . '/../wayback-image-restorer.php');
+
         wp_enqueue_style(
             'wir-admin',
-            plugin_dir_url(__DIR__) . 'admin/css/wayback-image-restorer-admin.css',
+            $plugin_url . 'admin/css/wayback-image-restorer-admin.css',
             [],
             $this->version
         );
 
         wp_enqueue_script(
             'wir-admin',
-            plugin_dir_url(__DIR__) . 'admin/js/wayback-image-restorer-admin.js',
+            $plugin_url . 'admin/js/wayback-image-restorer-admin.js',
             ['jquery'],
             $this->version,
             true

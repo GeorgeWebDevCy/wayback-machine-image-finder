@@ -13,6 +13,7 @@ final class Image_Scanner
     private const IMG_TAG_REGEX = '/<img[^>]+src=["\']([^"\']+)["\'][^>]*>/i';
     private const SRCSET_REGEX = '/srcset=["\']([^"\']+)["\']/i';
     private const MAX_POSTS_PER_BATCH = 50;
+    private const MAX_ATTACHMENTS_PER_BATCH = 100;
 
     private string $site_url;
     private string $upload_dir;
@@ -53,6 +54,7 @@ final class Image_Scanner
         $args = wp_parse_args($args, $defaults);
 
         $logger = Logger::get_instance();
+        $started_at = wp_date('c');
         $logger->info('scan_start', [
             'scan_id' => $this->scan_id,
             'dry_run' => $args['dry_run'],
@@ -115,34 +117,14 @@ final class Image_Scanner
                     $is_broken = $this->check_image_broken($image['url']);
                     
                     if ($is_broken) {
-                        $stats['images_broken']++;
-                        
-                        $existing_idx = $this->find_existing_broken($broken_images, $image['url']);
-                        
-                        if ($existing_idx !== null) {
-                            $broken_images[$existing_idx]['referenced_in'][] = [
-                                'post_id' => $post->ID,
-                                'post_title' => $post->post_title,
-                                'context' => $image['context'],
-                            ];
-                        } else {
-                            $archive_info = $this->find_archive($image['url'], $post->post_date);
-                            
-                            $broken_images[] = [
-                                'id' => count($broken_images) + 1,
-                                'url' => $image['url'],
-                                'type' => $this->get_image_type($image['url']),
-                                'referenced_in' => [[
-                                    'post_id' => $post->ID,
-                                    'post_title' => $post->post_title,
-                                    'context' => $image['context'],
-                                ]],
-                                'archive_found' => $archive_info !== null,
-                                'archive_url' => $archive_info['archive_url'] ?? null,
-                                'archive_timestamp' => $archive_info['timestamp'] ?? null,
-                                'last_checked' => current_time('c'),
-                            ];
-                        }
+                        $this->record_broken_image(
+                            $broken_images,
+                            $image['url'],
+                            (int) $post->ID,
+                            $post->post_title,
+                            $image['context'],
+                            $post->post_date
+                        );
                     } else {
                         $stats['images_ok']++;
                     }
@@ -156,22 +138,28 @@ final class Image_Scanner
                 }
             }
 
+            if ($stats['scan_stopped_early']) {
+                break;
+            }
+
             $offset += self::MAX_POSTS_PER_BATCH;
 
             $this->resources->pause();
         }
 
-        $media_broken = $this->scan_media_library();
-        $broken_images = array_merge($broken_images, $media_broken);
+        $stats['posts_scanned'] = $processed_posts;
+
+        $this->scan_media_library($broken_images);
         $stats['images_broken'] = count($broken_images);
 
         $end_time = microtime(true);
         $duration = round($end_time - $start_time, 2);
+        $completed_at = wp_date('c');
 
         $result = [
             'scan_id' => $this->scan_id,
-            'started_at' => date('c'),
-            'completed_at' => date('c'),
+            'started_at' => $started_at,
+            'completed_at' => $completed_at,
             'duration_seconds' => $duration,
             'dry_run' => $args['dry_run'],
             'filters' => [
@@ -251,6 +239,49 @@ final class Image_Scanner
         }
 
         return get_posts($args);
+    }
+
+    private function record_broken_image(
+        array &$broken_images,
+        string $url,
+        int $post_id,
+        string $post_title,
+        string $context,
+        ?string $target_date = null
+    ): void {
+        $reference = [
+            'post_id' => $post_id,
+            'post_title' => $post_title,
+            'context' => $context,
+        ];
+
+        $existing_idx = $this->find_existing_broken($broken_images, $url);
+        if ($existing_idx !== null) {
+            foreach ($broken_images[$existing_idx]['referenced_in'] as $existing_reference) {
+                if (
+                    (int) ($existing_reference['post_id'] ?? 0) === $post_id &&
+                    ($existing_reference['context'] ?? '') === $context
+                ) {
+                    return;
+                }
+            }
+
+            $broken_images[$existing_idx]['referenced_in'][] = $reference;
+            return;
+        }
+
+        $archive_info = $this->find_archive($url, $target_date);
+
+        $broken_images[] = [
+            'id' => count($broken_images) + 1,
+            'url' => $url,
+            'type' => $this->get_image_type($url),
+            'referenced_in' => [$reference],
+            'archive_found' => $archive_info !== null,
+            'archive_url' => $archive_info['archive_url'] ?? null,
+            'archive_timestamp' => $archive_info['timestamp'] ?? null,
+            'last_checked' => current_time('c'),
+        ];
     }
 
     private function extract_images_from_post(\WP_Post $post): array
@@ -397,56 +428,66 @@ final class Image_Scanner
         return $code >= 400;
     }
 
-    private function scan_media_library(): array
+    private function scan_media_library(array &$broken_images): void
     {
         if ($this->resources->should_stop('scan_media_start')) {
-            return [];
+            return;
         }
 
-        $broken = [];
-
-        $attachments = get_posts([
-            'post_type' => 'attachment',
-            'post_mime_type' => 'image',
-            'posts_per_page' => 100,
-            'post_status' => 'inherit',
-        ]);
-
+        $offset = 0;
         $processed = 0;
-        foreach ($attachments as $attachment) {
-            if ($this->resources->should_stop('scan_media_item')) {
+        while (true) {
+            if ($this->resources->should_stop('scan_media_batch')) {
                 break;
             }
 
-            $file_path = get_attached_file($attachment->ID);
-            
-            if ($file_path && !file_exists($file_path)) {
-                $url = wp_get_attachment_url($attachment->ID);
-                $archive_info = $this->find_archive($url);
+            $attachments = get_posts([
+                'post_type' => 'attachment',
+                'post_mime_type' => 'image',
+                'posts_per_page' => self::MAX_ATTACHMENTS_PER_BATCH,
+                'post_status' => 'inherit',
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'offset' => $offset,
+            ]);
 
-                $broken[] = [
-                    'id' => time() . '_' . $attachment->ID,
-                    'url' => $url,
-                    'type' => 'local',
-                    'referenced_in' => [[
-                        'post_id' => $attachment->ID,
-                        'post_title' => get_the_title($attachment->ID),
-                        'context' => 'media_library',
-                    ]],
-                    'archive_found' => $archive_info !== null,
-                    'archive_url' => $archive_info['archive_url'] ?? null,
-                    'archive_timestamp' => $archive_info['timestamp'] ?? null,
-                    'last_checked' => current_time('c'),
-                ];
+            if (empty($attachments)) {
+                break;
             }
 
-            $processed++;
-            if ($processed % 20 === 0) {
-                $this->resources->pause();
+            foreach ($attachments as $attachment) {
+                if ($this->resources->should_stop('scan_media_item')) {
+                    return;
+                }
+
+                $file_path = get_attached_file($attachment->ID);
+                if ($file_path && !file_exists($file_path)) {
+                    $url = wp_get_attachment_url($attachment->ID);
+                    if ($url) {
+                        $this->record_broken_image(
+                            $broken_images,
+                            $url,
+                            (int) $attachment->ID,
+                            get_the_title($attachment->ID),
+                            'media_library'
+                        );
+                    }
+                }
+
+                $processed++;
+                if ($processed % 20 === 0) {
+                    $this->resources->pause();
+                }
             }
+
+            $offset += self::MAX_ATTACHMENTS_PER_BATCH;
+
+            if (count($attachments) < self::MAX_ATTACHMENTS_PER_BATCH) {
+                break;
+            }
+
+            $this->resources->pause();
         }
-
-        return $broken;
     }
 
     private function find_existing_broken(array $broken_images, string $url): ?int

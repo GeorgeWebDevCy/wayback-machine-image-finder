@@ -25,7 +25,7 @@ final class Wayback_Api
     public function __construct(?int $timeout = null, ?Resource_Manager $resources = null)
     {
         $this->resources = $resources ?? new Resource_Manager();
-        $this->timeout = $timeout ?? $this->resources->get_timeout();
+        $this->timeout = $timeout ?? $this->resources->get_request_timeout();
     }
 
     public function find_archive(string $url, ?string $target_date = null): ?array

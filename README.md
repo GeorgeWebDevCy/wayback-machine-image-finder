@@ -69,8 +69,9 @@ Key files and directories:
 
 - Downloads the chosen source
 - Validates MIME type before import
-- Imports via WordPress media handling
-- Updates content or featured-image references for affected posts
+- Repairs existing attachment records when the missing image belongs to the media library
+- Imports via WordPress media handling when a brand-new attachment is needed
+- Updates content or featured-image references for affected posts when URLs change
 
 ### Logging
 
@@ -94,7 +95,7 @@ Notes:
 ## Release Notes
 
 - Keep the main plugin file at repository root so the GitHub updater can read the plugin header correctly
-- Bump versions consistently in `wayback-image-restorer.php`, `README.txt`, and any mirrored version constants
+- Bump versions consistently in `wayback-image-restorer.php` and `README.txt`
 - Keep `README.txt` accurate because WordPress uses it for plugin details and upgrade notes
 
 ## Current Status
