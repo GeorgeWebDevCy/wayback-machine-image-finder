@@ -16,17 +16,19 @@ final class Admin
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.3';
+        $this->version = '1.0.4';
     }
 
     public function add_admin_menu(): void
     {
-        add_management_page(
+        add_menu_page(
             __('Wayback Image Restorer', 'wayback-image-restorer'),
             __('Wayback Image Restorer', 'wayback-image-restorer'),
             'manage_options',
             'wayback-image-restorer',
-            [$this, 'render_admin_page']
+            [$this, 'render_admin_page'],
+            'dashicons-format-image',
+            58
         );
     }
 

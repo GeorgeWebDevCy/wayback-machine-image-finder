@@ -30,7 +30,7 @@ final class Wayback_Image_Restorer
     private function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = '1.0.3';
+        $this->version = '1.0.4';
     }
 
     public function run(): void

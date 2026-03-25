@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.3
+Stable tag: 1.0.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.4 =
+* Give the plugin its own top-level WordPress admin menu
+
 = 1.0.3 =
 * Move the plugin code to the repository root so GitHub branch updates work with the standard updater setup
 
@@ -74,6 +77,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.4 =
+Adds a dedicated top-level admin menu for Wayback Image Restorer.
 
 = 1.0.3 =
 Moves the plugin to the repository root so GitHub updater checks can read the plugin version directly.
