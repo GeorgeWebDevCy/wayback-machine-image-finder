@@ -488,7 +488,8 @@ final class Image_Scanner
                             $url,
                             (int) $attachment->ID,
                             get_the_title($attachment->ID),
-                            'media_library'
+                            'media_library',
+                            $attachment->post_date
                         );
                     }
                 }

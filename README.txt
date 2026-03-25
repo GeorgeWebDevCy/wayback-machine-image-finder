@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.7
+Stable tag: 1.0.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,11 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.8 =
+* Prefer the closest Wayback snapshot across `.webp`, `.png`, `.jpg`, and `.jpeg` candidates instead of stopping at the first hit
+* Use the original upload year/month from WordPress upload URLs when choosing the best archive for converted images
+* Apply the same archive targeting logic to missing media-library attachments
+
 = 1.0.7 =
 * Fix in-place media restores that were falsely failing when WordPress kept the same attachment file path
 * Add safer attachment path metadata syncing and better logging for real path-sync failures
@@ -93,6 +98,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.8 =
+Improves archive matching for missing WebP images that originally existed as PNG or JPEG files.
 
 = 1.0.7 =
 Fixes false attachment path errors during in-place media restores.

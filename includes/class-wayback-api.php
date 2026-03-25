@@ -34,19 +34,34 @@ final class Wayback_Api
             return null;
         }
 
+        $resolved_target_date = $this->resolve_lookup_target_date($url, $target_date);
         $last_error = null;
+        $best_match = null;
+        $best_rank = null;
 
         foreach ($this->get_archive_lookup_candidates($url) as $candidate_url) {
-            $data = $this->query_cdx($candidate_url, 1, $target_date);
+            $record = $this->find_best_candidate_record($candidate_url, $resolved_target_date);
 
-            if (is_wp_error($data)) {
-                $last_error = $data;
+            if (is_wp_error($record)) {
+                $last_error = $record;
                 continue;
             }
 
-            if (!empty($data[0])) {
-                return $this->format_archive_record($data[0], $candidate_url);
+            if (!is_array($record) || empty($record[0])) {
+                continue;
             }
+
+            $archive = $this->format_archive_record($record, $candidate_url);
+            $rank = $this->rank_archive_record($archive, $url, $resolved_target_date);
+
+            if ($best_match === null || $this->is_better_archive_rank($rank, $best_rank)) {
+                $best_match = $archive;
+                $best_rank = $rank;
+            }
+        }
+
+        if ($best_match !== null) {
+            return $best_match;
         }
 
         if ($last_error instanceof \WP_Error) {
@@ -275,7 +290,7 @@ final class Wayback_Api
         if ($timestamp === false) {
             return null;
         }
-        return date('Ymd', $timestamp);
+        return gmdate('YmdHis', $timestamp);
     }
 
     private function build_cdx_query_url(string $url, int $limit, ?string $target_date = null): string
@@ -292,7 +307,7 @@ final class Wayback_Api
         if ($target_date !== null) {
             $date_formatted = $this->format_date_for_cdx($target_date);
             if ($date_formatted) {
-                $query_parts[] = 'from=' . rawurlencode($date_formatted);
+                $query_parts[] = 'closest=' . rawurlencode($date_formatted);
             }
         }
 
@@ -340,6 +355,123 @@ final class Wayback_Api
         }
 
         return $candidates;
+    }
+
+    private function find_best_candidate_record(string $url, ?string $target_date = null): array|\WP_Error|null
+    {
+        $attempt_dates = [];
+
+        if ($target_date !== null) {
+            $attempt_dates[] = $target_date;
+        }
+
+        $attempt_dates[] = null;
+        $last_error = null;
+
+        foreach ($attempt_dates as $attempt_date) {
+            $data = $this->query_cdx($url, 1, $attempt_date);
+
+            if (is_wp_error($data)) {
+                $last_error = $data;
+                continue;
+            }
+
+            if (!empty($data[0])) {
+                return $data[0];
+            }
+        }
+
+        return $last_error;
+    }
+
+    private function resolve_lookup_target_date(string $url, ?string $fallback_target_date): ?string
+    {
+        $upload_target_date = $this->extract_upload_target_date($url);
+
+        if ($upload_target_date !== null) {
+            return $upload_target_date;
+        }
+
+        return $fallback_target_date;
+    }
+
+    private function extract_upload_target_date(string $url): ?string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($path)) {
+            return null;
+        }
+
+        if (!preg_match('#/wp-content/uploads/(\d{4})/(\d{2})/#', $path, $matches)) {
+            return null;
+        }
+
+        $year = (int) $matches[1];
+        $month = (int) $matches[2];
+
+        if ($year < 1990 || $month < 1 || $month > 12) {
+            return null;
+        }
+
+        return sprintf('%04d-%02d-01 00:00:00', $year, $month);
+    }
+
+    private function rank_archive_record(array $archive, string $requested_url, ?string $target_date): array
+    {
+        $archive_timestamp = $this->parse_archive_timestamp($archive['timestamp'] ?? '');
+        $target_timestamp = $target_date !== null ? strtotime($target_date) : false;
+
+        return [
+            'distance' => ($archive_timestamp !== null && $target_timestamp !== false)
+                ? abs($archive_timestamp - $target_timestamp)
+                : null,
+            'timestamp' => $archive_timestamp ?? PHP_INT_MAX,
+            'candidate_priority' => (($archive['lookup_url'] ?? '') === $requested_url) ? 0 : 1,
+        ];
+    }
+
+    private function is_better_archive_rank(array $candidate_rank, ?array $current_best_rank): bool
+    {
+        if ($current_best_rank === null) {
+            return true;
+        }
+
+        $candidate_distance = $candidate_rank['distance'];
+        $current_distance = $current_best_rank['distance'];
+
+        if ($candidate_distance !== null || $current_distance !== null) {
+            if ($candidate_distance === null) {
+                return false;
+            }
+
+            if ($current_distance === null) {
+                return true;
+            }
+
+            if ($candidate_distance !== $current_distance) {
+                return $candidate_distance < $current_distance;
+            }
+        }
+
+        if ($candidate_rank['timestamp'] !== $current_best_rank['timestamp']) {
+            return $candidate_rank['timestamp'] < $current_best_rank['timestamp'];
+        }
+
+        return $candidate_rank['candidate_priority'] < $current_best_rank['candidate_priority'];
+    }
+
+    private function parse_archive_timestamp(string $timestamp): ?int
+    {
+        if (!preg_match('/^\d{14}$/', $timestamp)) {
+            return null;
+        }
+
+        $datetime = \DateTimeImmutable::createFromFormat('YmdHis', $timestamp, new \DateTimeZone('UTC'));
+        if ($datetime === false) {
+            return null;
+        }
+
+        return $datetime->getTimestamp();
     }
 
     private function parse_content_type(string $content_type): string
