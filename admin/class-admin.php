@@ -16,7 +16,7 @@ final class Admin
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.8';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.9';
     }
 
     public function add_admin_menu(): void

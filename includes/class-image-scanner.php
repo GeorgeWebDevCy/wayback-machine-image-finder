@@ -17,14 +17,17 @@ final class Image_Scanner
 
     private string $site_url;
     private string $upload_dir;
+    private string $upload_base_url;
     private string $scan_id;
     private Resource_Manager $resources;
+    private array $broken_url_cache = [];
 
     public function __construct(?Resource_Manager $resources = null)
     {
         $this->site_url = get_site_url();
         $upload = wp_upload_dir();
-        $this->upload_dir = $upload['basedir'];
+        $this->upload_dir = (string) ($upload['basedir'] ?? '');
+        $this->upload_base_url = rtrim((string) ($upload['baseurl'] ?? ''), '/');
         $this->scan_id = $this->generate_scan_id();
         $this->resources = $resources ?? new Resource_Manager();
 
@@ -389,62 +392,155 @@ final class Image_Scanner
 
     private function check_image_broken(string $url): bool
     {
-        $type = $this->get_image_type($url);
-
-        if ($type === 'local') {
-            return $this->check_local_file_missing($url);
+        if (array_key_exists($url, $this->broken_url_cache)) {
+            return $this->broken_url_cache[$url];
         }
 
-        return $this->check_external_url_broken($url);
+        $type = $this->get_image_type($url);
+
+        $is_broken = $type === 'local'
+            ? $this->check_local_file_missing($url)
+            : $this->check_external_url_broken($url);
+
+        $this->broken_url_cache[$url] = $is_broken;
+
+        return $is_broken;
     }
 
     private function check_local_file_missing(string $url): bool
     {
         $relative_path = $this->get_relative_path_from_url($url);
-        if ($relative_path === null) {
-            return false;
+        if ($relative_path !== null && $this->upload_dir !== '') {
+            $full_path = wp_normalize_path(trailingslashit($this->upload_dir) . ltrim($relative_path, '/'));
+            if (!file_exists($full_path)) {
+                return true;
+            }
         }
 
-        $full_path = $this->upload_dir . '/' . ltrim($relative_path, '/');
-        return !file_exists($full_path);
+        return $this->check_http_url_broken($url, 'check_local');
     }
 
     private function get_relative_path_from_url(string $url): ?string
     {
-        $parsed = parse_url($url);
-        $site_parsed = parse_url($this->site_url);
+        $url_path = parse_url($url, PHP_URL_PATH);
+        $upload_base_path = parse_url($this->upload_base_url, PHP_URL_PATH);
 
-        $url_path = $parsed['path'] ?? '';
-        $site_path = $site_parsed['path'] ?? '/';
-
-        if (str_starts_with($url_path, $site_path)) {
-            return substr($url_path, strlen($site_path));
+        if (!is_string($url_path) || !is_string($upload_base_path) || $upload_base_path === '') {
+            return null;
         }
 
-        if (str_starts_with($url_path, '/wp-content/')) {
-            return ltrim($url_path, '/');
+        $normalized_upload_base_path = rtrim($upload_base_path, '/');
+        if ($normalized_upload_base_path === '') {
+            return null;
         }
 
-        return null;
+        if ($url_path === $normalized_upload_base_path) {
+            return '';
+        }
+
+        $prefix = $normalized_upload_base_path . '/';
+        if (!str_starts_with($url_path, $prefix)) {
+            return null;
+        }
+
+        return ltrim(substr($url_path, strlen($prefix)), '/');
     }
 
     private function check_external_url_broken(string $url): bool
     {
-        if ($this->resources->should_stop('check_external')) {
+        return $this->check_http_url_broken($url, 'check_external');
+    }
+
+    private function check_http_url_broken(string $url, string $resource_reason): bool
+    {
+        if ($this->resources->should_stop($resource_reason)) {
             return false;
         }
 
-        $response = wp_safe_remote_head($url, [
-            'timeout' => 10,
-            'sslverify' => true,
-        ]);
+        $head_response = $this->make_http_image_check_request($url, 'HEAD');
+        if (!is_wp_error($head_response)) {
+            $head_result = $this->interpret_http_image_response($head_response);
+            if ($head_result !== null) {
+                return !$head_result;
+            }
+        }
 
-        if (is_wp_error($response)) {
+        if ($this->resources->should_stop($resource_reason . '_get')) {
+            return false;
+        }
+
+        $get_response = $this->make_http_image_check_request($url, 'GET');
+        if (is_wp_error($get_response)) {
             return true;
         }
 
+        $get_result = $this->interpret_http_image_response($get_response, true);
+
+        return $get_result !== true;
+    }
+
+    private function make_http_image_check_request(string $url, string $method): array|\WP_Error
+    {
+        $args = [
+            'method' => $method,
+            'timeout' => 10,
+            'redirection' => 3,
+            'sslverify' => true,
+            'user-agent' => 'Wayback-Image-Restorer-WordPress/1.0',
+        ];
+
+        if ($method === 'GET') {
+            $args['headers'] = [
+                'Accept' => '*/*',
+            ];
+            $args['limit_response_size'] = 1024;
+        }
+
+        return wp_safe_remote_request($url, $args);
+    }
+
+    private function interpret_http_image_response(array $response, bool $allow_body_sniff = false): ?bool
+    {
         $code = wp_remote_retrieve_response_code($response);
-        return $code >= 400;
+
+        if ($code < 200 || $code >= 400) {
+            return false;
+        }
+
+        $content_type = $this->normalize_content_type((string) wp_remote_retrieve_header($response, 'content-type'));
+        if ($content_type !== '') {
+            return $this->is_image_content_type($content_type);
+        }
+
+        if (!$allow_body_sniff) {
+            return null;
+        }
+
+        $body = ltrim((string) wp_remote_retrieve_body($response));
+        if ($body === '') {
+            return null;
+        }
+
+        $body_preview = strtolower(substr($body, 0, 256));
+        if (str_contains($body_preview, '<svg')) {
+            return true;
+        }
+
+        return $body[0] !== '<';
+    }
+
+    private function normalize_content_type(string $content_type): string
+    {
+        if (preg_match('/^([^;]+)/', $content_type, $matches)) {
+            return strtolower(trim($matches[1]));
+        }
+
+        return '';
+    }
+
+    private function is_image_content_type(string $content_type): bool
+    {
+        return str_starts_with($content_type, 'image/') || $content_type === 'application/octet-stream';
     }
 
     private function scan_media_library(array &$broken_images): void
@@ -480,18 +576,17 @@ final class Image_Scanner
                 }
 
                 $file_path = get_attached_file($attachment->ID);
-                if ($file_path && !file_exists($file_path)) {
-                    $url = wp_get_attachment_url($attachment->ID);
-                    if ($url) {
-                        $this->record_broken_image(
-                            $broken_images,
-                            $url,
-                            (int) $attachment->ID,
-                            get_the_title($attachment->ID),
-                            'media_library',
-                            $attachment->post_date
-                        );
-                    }
+                $url = wp_get_attachment_url($attachment->ID);
+
+                if ($url && (!$file_path || !file_exists($file_path) || $this->check_image_broken($url))) {
+                    $this->record_broken_image(
+                        $broken_images,
+                        $url,
+                        (int) $attachment->ID,
+                        get_the_title($attachment->ID),
+                        'media_library',
+                        $attachment->post_date
+                    );
                 }
 
                 $processed++;

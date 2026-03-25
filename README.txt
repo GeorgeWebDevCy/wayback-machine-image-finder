@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.8
+Stable tag: 1.0.9
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,11 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.9 =
+* Detect same-site upload URLs as broken when the public URL returns forbidden or non-image responses even if a file still exists on disk
+* Resolve upload-relative paths from WordPress' uploads base URL before falling back to HTTP checks
+* Apply the same URL accessibility checks to media-library attachment scans
+
 = 1.0.8 =
 * Prefer the closest Wayback snapshot across `.webp`, `.png`, `.jpg`, and `.jpeg` candidates instead of stopping at the first hit
 * Use the original upload year/month from WordPress upload URLs when choosing the best archive for converted images
@@ -98,6 +103,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.9 =
+Improves detection for same-site uploads that now return forbidden or non-image responses, including converted WebP media.
 
 = 1.0.8 =
 Improves archive matching for missing WebP images that originally existed as PNG or JPEG files.
