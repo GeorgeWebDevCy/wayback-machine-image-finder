@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.12
+Stable tag: 1.0.13
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -61,6 +61,11 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 
 == Changelog ==
 
+= 1.0.13 =
+* Add persistent scan and restore state so long recovery runs can resume after page reloads
+* Harden restores with archive-date overrides, operation locking, MIME validation, and temp-file cleanup
+* Add undo support, archive rechecks in the admin UI, and WP-CLI scan and restore commands
+
 = 1.0.12 =
 * Keep browser-detected broken media visible in scan results even when the follow-up Wayback archive lookup is slow or times out
 
@@ -113,6 +118,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.13 =
+Adds resumable restore state, safer recovery tooling, and WP-CLI support for larger repair runs.
 
 = 1.0.12 =
 Ensures browser-detected broken media still appear in scan results when archive enrichment is delayed.
