@@ -59,9 +59,28 @@ final class Image_Restorer
             );
         }
 
+        $restore_mode = Settings::get('restore_mode', 'archive_then_original');
+
+        if (!$dry_run) {
+            $preflight = $this->preflight_wayback_restore(
+                $image_url,
+                $archive_url,
+                $restore_mode,
+                $target_date,
+                $scan_id,
+                $image_id
+            );
+
+            if (!empty($preflight['failure']) && is_array($preflight['failure'])) {
+                return $preflight['failure'];
+            }
+
+            $archive_url = $preflight['archive_url'] ?? $archive_url;
+        }
+
         $this->mark_restore_started($scan_id, $image_id);
 
-        if ($target_date !== null) {
+        if ($target_date !== null && $this->restore_mode_uses_archive($restore_mode)) {
             $archive_info = $this->api->find_archive($image_url, $target_date, true);
             $archive_url = $archive_info['archive_url'] ?? null;
         }
@@ -91,7 +110,6 @@ final class Image_Restorer
             return $result;
         }
 
-        $restore_mode   = Settings::get('restore_mode', 'archive_then_original');
         $download_result = $this->download_image($image_url, $archive_url, $restore_mode);
 
         if (!$download_result['success']) {
@@ -384,6 +402,92 @@ final class Image_Restorer
         return $result;
     }
 
+    private function create_wayback_unreachable_failure(
+        string $image_url,
+        string $restore_mode,
+        ?string $target_date,
+        ?string $archive_url,
+        array $preflight,
+        string $scan_id = '',
+        int $image_id = 0
+    ): array {
+        $detail = (string) ($preflight['error'] ?? 'Unknown error');
+        $error = $detail !== ''
+            ? sprintf('Wayback Machine is currently unreachable: %s', $detail)
+            : 'Wayback Machine is currently unreachable';
+
+        $result = [
+            'success' => false,
+            'error' => $error,
+            'restore_checkpoint' => 'wayback_preflight',
+            'wayback_reachable' => false,
+            'wayback_preflight' => $preflight,
+            'restore_mode' => $restore_mode,
+            'target_date' => $target_date,
+            'archive_url' => $archive_url,
+        ];
+
+        $this->log_restore_failure($image_url, $result);
+        $this->persist_restore_state($scan_id, $image_id, $result);
+
+        return $result;
+    }
+
+    private function preflight_wayback_restore(
+        string $image_url,
+        ?string $archive_url,
+        string $restore_mode,
+        ?string $target_date,
+        string $scan_id,
+        int $image_id
+    ): array {
+        if (!$this->needs_wayback_preflight($restore_mode, $archive_url, $target_date)) {
+            return [
+                'archive_url' => $archive_url,
+                'failure' => null,
+            ];
+        }
+
+        $preflight = $this->api->check_service_reachability();
+        if (!empty($preflight['reachable'])) {
+            return [
+                'archive_url' => $archive_url,
+                'failure' => null,
+            ];
+        }
+
+        if ($this->can_skip_archive_after_wayback_failure($restore_mode, $target_date)) {
+            if (empty($preflight['cached'])) {
+                $this->logger->warning('restore_wayback_skipped', [
+                    'image_url' => $image_url,
+                    'restore_mode' => $restore_mode,
+                    'archive_url' => $archive_url,
+                    'wayback_error' => (string) ($preflight['error'] ?? 'Unknown error'),
+                    'wayback_status_code' => (int) ($preflight['status_code'] ?? 0),
+                    'wayback_checked_at' => (string) ($preflight['checked_at'] ?? ''),
+                ]);
+            }
+
+            return [
+                'archive_url' => null,
+                'failure' => null,
+            ];
+        }
+
+        return [
+            'archive_url' => $archive_url,
+            'failure' => $this->create_wayback_unreachable_failure(
+                $image_url,
+                $restore_mode,
+                $target_date,
+                $archive_url,
+                $preflight,
+                $scan_id,
+                $image_id
+            ),
+        ];
+    }
+
     private function log_restore_failure(string $image_url, array $result): void
     {
         $log_data = [
@@ -397,7 +501,60 @@ final class Image_Restorer
             $log_data['resource_status'] = $this->resources->get_status();
         }
 
+        if (!empty($result['restore_checkpoint'])) {
+            $log_data['restore_checkpoint'] = (string) $result['restore_checkpoint'];
+        }
+
+        if (array_key_exists('wayback_reachable', $result)) {
+            $log_data['wayback_reachable'] = !empty($result['wayback_reachable']);
+        }
+
+        $preflight = $result['wayback_preflight'] ?? null;
+        if (is_array($preflight)) {
+            $log_data['wayback_error'] = (string) ($preflight['error'] ?? '');
+            $log_data['wayback_status_code'] = isset($preflight['status_code'])
+                ? (int) $preflight['status_code']
+                : 0;
+            $log_data['wayback_checked_at'] = (string) ($preflight['checked_at'] ?? '');
+            $log_data['wayback_check_cached'] = !empty($preflight['cached']);
+        }
+
+        if (!empty($result['restore_mode'])) {
+            $log_data['restore_mode'] = (string) $result['restore_mode'];
+        }
+
+        if (array_key_exists('target_date', $result)) {
+            $log_data['target_date'] = $result['target_date'];
+        }
+
         $this->logger->error('restore_failed', $log_data);
+    }
+
+    private function needs_wayback_preflight(string $restore_mode, ?string $archive_url, ?string $target_date): bool
+    {
+        if (!$this->restore_mode_uses_archive($restore_mode)) {
+            return false;
+        }
+
+        if ($target_date !== null) {
+            return true;
+        }
+
+        return is_string($archive_url) && $archive_url !== '';
+    }
+
+    private function can_skip_archive_after_wayback_failure(string $restore_mode, ?string $target_date): bool
+    {
+        if ($target_date !== null) {
+            return false;
+        }
+
+        return in_array($restore_mode, ['archive_then_original', 'original_then_archive'], true);
+    }
+
+    private function restore_mode_uses_archive(string $restore_mode): bool
+    {
+        return in_array($restore_mode, ['archive_only', 'archive_then_original', 'original_then_archive'], true);
     }
 
     private function download_image(string $original_url, ?string $archive_url, string $restore_mode): array

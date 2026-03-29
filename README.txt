@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.14
+Stable tag: 1.0.15
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -60,6 +60,9 @@ The plugin is designed to be resource-efficient. It uses batch processing, memor
 Yes! Enable "Dry Run Mode" to scan and see what would be restored without making any changes.
 
 == Changelog ==
+
+= 1.0.15 =
+* Check Wayback reachability before archive-dependent restores, fail fast when the selected mode requires Wayback, and skip the archive leg when original fallback is still allowed
 
 = 1.0.14 =
 * Log restore failures that stop because of resource limits with checkpoint metadata so the admin error is traceable in plugin logs
@@ -121,6 +124,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.15 =
+Checks Wayback reachability before archive restores so unavailable archive service fails fast or cleanly falls back to the original source when allowed.
 
 = 1.0.14 =
 Adds explicit restore log entries and checkpoint details when a restore is stopped by resource limits.

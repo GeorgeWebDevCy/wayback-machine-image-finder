@@ -11,6 +11,10 @@ if (!defined('ABSPATH')) {
 final class Wayback_Api
 {
     private const CDX_API_URL = 'https://web.archive.org/cdx/search/cdx';
+    private const SERVICE_REACHABILITY_CACHE_KEY = 'wir_wayback_service_reachability';
+    private const SERVICE_REACHABILITY_SUCCESS_TTL = 300;
+    private const SERVICE_REACHABILITY_FAILURE_TTL = 60;
+    private const SERVICE_REACHABILITY_PROBE_URL = 'https://example.com/';
     private const MAX_RETRIES = 3;
     private const RETRY_DELAYS = [2, 4, 8];
     private const ARCHIVE_EXTENSION_FALLBACKS = [
@@ -115,6 +119,92 @@ final class Wayback_Api
         }
 
         return $archives;
+    }
+
+    public function check_service_reachability(bool $force = false): array
+    {
+        if (!$force) {
+            $cached = get_transient(self::SERVICE_REACHABILITY_CACHE_KEY);
+            if (is_array($cached) && array_key_exists('reachable', $cached)) {
+                $cached['cached'] = true;
+                return $cached;
+            }
+        }
+
+        $response = $this->make_request($this->build_cdx_query_url(self::SERVICE_REACHABILITY_PROBE_URL, 1));
+        $checked_at = current_time('c');
+
+        if (is_wp_error($response)) {
+            $result = [
+                'reachable' => false,
+                'error' => $response->get_error_message(),
+                'checked_at' => $checked_at,
+            ];
+
+            set_transient(
+                self::SERVICE_REACHABILITY_CACHE_KEY,
+                $result,
+                self::SERVICE_REACHABILITY_FAILURE_TTL
+            );
+
+            Logger::get_instance()->warning('wayback_reachability_failed', [
+                'error' => $result['error'],
+                'checked_at' => $checked_at,
+            ]);
+
+            $result['cached'] = false;
+
+            return $result;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code >= 200 && $status_code < 400) {
+            $result = [
+                'reachable' => true,
+                'status_code' => $status_code,
+                'checked_at' => $checked_at,
+            ];
+
+            set_transient(
+                self::SERVICE_REACHABILITY_CACHE_KEY,
+                $result,
+                self::SERVICE_REACHABILITY_SUCCESS_TTL
+            );
+
+            $result['cached'] = false;
+
+            return $result;
+        }
+
+        $error = sprintf('HTTP %d', $status_code);
+        if ($status_code === 429) {
+            $error = 'Rate limited by Wayback Machine';
+        } elseif ($status_code === 503) {
+            $error = 'Wayback Machine is temporarily unavailable';
+        }
+
+        $result = [
+            'reachable' => false,
+            'status_code' => $status_code,
+            'error' => $error,
+            'checked_at' => $checked_at,
+        ];
+
+        set_transient(
+            self::SERVICE_REACHABILITY_CACHE_KEY,
+            $result,
+            self::SERVICE_REACHABILITY_FAILURE_TTL
+        );
+
+        Logger::get_instance()->warning('wayback_reachability_failed', [
+            'status_code' => $status_code,
+            'error' => $error,
+            'checked_at' => $checked_at,
+        ]);
+
+        $result['cached'] = false;
+
+        return $result;
     }
 
     public function download_image(string $archive_url): array
