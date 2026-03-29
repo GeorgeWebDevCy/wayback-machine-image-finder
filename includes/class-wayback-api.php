@@ -14,6 +14,7 @@ final class Wayback_Api
     private const SERVICE_REACHABILITY_CACHE_KEY = 'wir_wayback_service_reachability';
     private const SERVICE_REACHABILITY_SUCCESS_TTL = 300;
     private const SERVICE_REACHABILITY_FAILURE_TTL = 60;
+    private const SERVICE_REACHABILITY_RATE_LIMIT_TTL = 20;
     private const SERVICE_REACHABILITY_PROBE_URL = 'https://example.com/';
     private const MAX_RETRIES = 3;
     private const RETRY_DELAYS = [2, 4, 8];
@@ -139,6 +140,7 @@ final class Wayback_Api
                 'reachable' => false,
                 'error' => $response->get_error_message(),
                 'checked_at' => $checked_at,
+                'rate_limited' => false,
             ];
 
             set_transient(
@@ -163,6 +165,7 @@ final class Wayback_Api
                 'reachable' => true,
                 'status_code' => $status_code,
                 'checked_at' => $checked_at,
+                'rate_limited' => false,
             ];
 
             set_transient(
@@ -188,12 +191,15 @@ final class Wayback_Api
             'status_code' => $status_code,
             'error' => $error,
             'checked_at' => $checked_at,
+            'rate_limited' => $status_code === 429,
         ];
 
         set_transient(
             self::SERVICE_REACHABILITY_CACHE_KEY,
             $result,
-            self::SERVICE_REACHABILITY_FAILURE_TTL
+            $status_code === 429
+                ? self::SERVICE_REACHABILITY_RATE_LIMIT_TTL
+                : self::SERVICE_REACHABILITY_FAILURE_TTL
         );
 
         Logger::get_instance()->warning('wayback_reachability_failed', [

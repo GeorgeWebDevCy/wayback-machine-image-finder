@@ -731,6 +731,10 @@
             }
 
             image.target_date = value || null;
+            image.archive_found = false;
+            image.archive_url = null;
+            image.archive_timestamp = null;
+            image.last_checked = null;
         },
 
         lookupArchive: function(imageId, $btn) {

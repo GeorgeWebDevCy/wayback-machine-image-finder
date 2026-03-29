@@ -80,7 +80,11 @@ final class Image_Restorer
 
         $this->mark_restore_started($scan_id, $image_id);
 
-        if ($target_date !== null && $this->restore_mode_uses_archive($restore_mode)) {
+        if (
+            $target_date !== null
+            && $this->restore_mode_uses_archive($restore_mode)
+            && !$this->has_archive_url($archive_url)
+        ) {
             $archive_info = $this->api->find_archive($image_url, $target_date, true);
             $archive_url = $archive_info['archive_url'] ?? null;
         }
@@ -456,6 +460,25 @@ final class Image_Restorer
             ];
         }
 
+        if (!empty($preflight['rate_limited'])) {
+            if (empty($preflight['cached'])) {
+                $this->logger->warning('restore_wayback_rate_limited', [
+                    'image_url' => $image_url,
+                    'restore_mode' => $restore_mode,
+                    'archive_url' => $archive_url,
+                    'target_date' => $target_date,
+                    'wayback_error' => (string) ($preflight['error'] ?? 'Rate limited by Wayback Machine'),
+                    'wayback_status_code' => (int) ($preflight['status_code'] ?? 429),
+                    'wayback_checked_at' => (string) ($preflight['checked_at'] ?? ''),
+                ]);
+            }
+
+            return [
+                'archive_url' => $archive_url,
+                'failure' => null,
+            ];
+        }
+
         if ($this->can_skip_archive_after_wayback_failure($restore_mode, $target_date)) {
             if (empty($preflight['cached'])) {
                 $this->logger->warning('restore_wayback_skipped', [
@@ -536,11 +559,11 @@ final class Image_Restorer
             return false;
         }
 
-        if ($target_date !== null) {
-            return true;
+        if ($this->has_archive_url($archive_url)) {
+            return false;
         }
 
-        return is_string($archive_url) && $archive_url !== '';
+        return $target_date !== null;
     }
 
     private function can_skip_archive_after_wayback_failure(string $restore_mode, ?string $target_date): bool
@@ -555,6 +578,11 @@ final class Image_Restorer
     private function restore_mode_uses_archive(string $restore_mode): bool
     {
         return in_array($restore_mode, ['archive_only', 'archive_then_original', 'original_then_archive'], true);
+    }
+
+    private function has_archive_url(?string $archive_url): bool
+    {
+        return is_string($archive_url) && $archive_url !== '';
     }
 
     private function download_image(string $original_url, ?string $archive_url, string $restore_mode): array

@@ -16,7 +16,7 @@ final class Public_
     public function __construct()
     {
         $this->plugin_name = 'wayback-image-restorer';
-        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.15';
+        $this->version = defined('WIR_VERSION') ? WIR_VERSION : '1.0.16';
     }
 
     public function enqueue_assets(): void
