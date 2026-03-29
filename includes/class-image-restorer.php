@@ -461,6 +461,27 @@ final class Image_Restorer
         }
 
         if (!empty($preflight['rate_limited'])) {
+            if ($this->can_skip_archive_after_wayback_failure($restore_mode, $target_date)) {
+                if (empty($preflight['cached'])) {
+                    $this->logger->warning('restore_wayback_rate_limited', [
+                        'image_url' => $image_url,
+                        'restore_mode' => $restore_mode,
+                        'archive_url' => $archive_url,
+                        'target_date' => $target_date,
+                        'wayback_error' => (string) ($preflight['error'] ?? 'Rate limited by Wayback Machine'),
+                        'wayback_status_code' => (int) ($preflight['status_code'] ?? 429),
+                        'wayback_checked_at' => (string) ($preflight['checked_at'] ?? ''),
+                        'wayback_rate_limit_until' => (string) ($preflight['rate_limit_until'] ?? ''),
+                        'wayback_rate_limit_remaining_seconds' => (int) ($preflight['rate_limit_remaining_seconds'] ?? 0),
+                    ]);
+                }
+
+                return [
+                    'archive_url' => $archive_url,
+                    'failure' => null,
+                ];
+            }
+
             if (empty($preflight['cached'])) {
                 $this->logger->warning('restore_wayback_rate_limited', [
                     'image_url' => $image_url,
@@ -470,12 +491,22 @@ final class Image_Restorer
                     'wayback_error' => (string) ($preflight['error'] ?? 'Rate limited by Wayback Machine'),
                     'wayback_status_code' => (int) ($preflight['status_code'] ?? 429),
                     'wayback_checked_at' => (string) ($preflight['checked_at'] ?? ''),
+                    'wayback_rate_limit_until' => (string) ($preflight['rate_limit_until'] ?? ''),
+                    'wayback_rate_limit_remaining_seconds' => (int) ($preflight['rate_limit_remaining_seconds'] ?? 0),
                 ]);
             }
 
             return [
                 'archive_url' => $archive_url,
-                'failure' => null,
+                'failure' => $this->create_wayback_unreachable_failure(
+                    $image_url,
+                    $restore_mode,
+                    $target_date,
+                    $archive_url,
+                    $preflight,
+                    $scan_id,
+                    $image_id
+                ),
             ];
         }
 
@@ -540,6 +571,10 @@ final class Image_Restorer
                 : 0;
             $log_data['wayback_checked_at'] = (string) ($preflight['checked_at'] ?? '');
             $log_data['wayback_check_cached'] = !empty($preflight['cached']);
+            $log_data['wayback_rate_limit_until'] = (string) ($preflight['rate_limit_until'] ?? '');
+            $log_data['wayback_rate_limit_remaining_seconds'] = isset($preflight['rate_limit_remaining_seconds'])
+                ? (int) $preflight['rate_limit_remaining_seconds']
+                : 0;
         }
 
         if (!empty($result['restore_mode'])) {

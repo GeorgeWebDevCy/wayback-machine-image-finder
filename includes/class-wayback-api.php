@@ -11,6 +11,7 @@ if (!defined('ABSPATH')) {
 final class Wayback_Api
 {
     private const CDX_API_URL = 'https://web.archive.org/cdx/search/cdx';
+    private const RATE_LIMIT_STATUS_CACHE_KEY = 'wir_wayback_rate_limit_status';
     private const SERVICE_REACHABILITY_CACHE_KEY = 'wir_wayback_service_reachability';
     private const SERVICE_REACHABILITY_SUCCESS_TTL = 300;
     private const SERVICE_REACHABILITY_FAILURE_TTL = 60;
@@ -124,6 +125,20 @@ final class Wayback_Api
 
     public function check_service_reachability(bool $force = false): array
     {
+        $rate_limit = $this->get_rate_limit_status();
+        if (!$force && !empty($rate_limit['active'])) {
+            return [
+                'reachable' => false,
+                'status_code' => (int) ($rate_limit['status_code'] ?? 429),
+                'error' => $this->format_rate_limit_error($rate_limit),
+                'checked_at' => (string) ($rate_limit['checked_at'] ?? current_time('c')),
+                'rate_limited' => true,
+                'rate_limit_until' => (string) ($rate_limit['until_iso'] ?? ''),
+                'rate_limit_remaining_seconds' => (int) ($rate_limit['remaining_seconds'] ?? 0),
+                'cached' => true,
+            ];
+        }
+
         if (!$force) {
             $cached = get_transient(self::SERVICE_REACHABILITY_CACHE_KEY);
             if (is_array($cached) && array_key_exists('reachable', $cached)) {
@@ -141,6 +156,8 @@ final class Wayback_Api
                 'error' => $response->get_error_message(),
                 'checked_at' => $checked_at,
                 'rate_limited' => false,
+                'rate_limit_until' => '',
+                'rate_limit_remaining_seconds' => 0,
             ];
 
             set_transient(
@@ -161,11 +178,15 @@ final class Wayback_Api
 
         $status_code = wp_remote_retrieve_response_code($response);
         if ($status_code >= 200 && $status_code < 400) {
+            $this->clear_rate_limit_status();
+
             $result = [
                 'reachable' => true,
                 'status_code' => $status_code,
                 'checked_at' => $checked_at,
                 'rate_limited' => false,
+                'rate_limit_until' => '',
+                'rate_limit_remaining_seconds' => 0,
             ];
 
             set_transient(
@@ -181,9 +202,17 @@ final class Wayback_Api
 
         $error = sprintf('HTTP %d', $status_code);
         if ($status_code === 429) {
-            $error = 'Rate limited by Wayback Machine';
+            $rate_limit = $this->store_rate_limit_status_from_response(
+                $response,
+                self::SERVICE_REACHABILITY_RATE_LIMIT_TTL,
+                'reachability_probe'
+            );
+            $error = $this->format_rate_limit_error($rate_limit);
         } elseif ($status_code === 503) {
             $error = 'Wayback Machine is temporarily unavailable';
+            $this->clear_rate_limit_status();
+        } else {
+            $this->clear_rate_limit_status();
         }
 
         $result = [
@@ -192,13 +221,19 @@ final class Wayback_Api
             'error' => $error,
             'checked_at' => $checked_at,
             'rate_limited' => $status_code === 429,
+            'rate_limit_until' => $status_code === 429
+                ? (string) ($rate_limit['until_iso'] ?? '')
+                : '',
+            'rate_limit_remaining_seconds' => $status_code === 429
+                ? (int) ($rate_limit['remaining_seconds'] ?? 0)
+                : 0,
         ];
 
         set_transient(
             self::SERVICE_REACHABILITY_CACHE_KEY,
             $result,
             $status_code === 429
-                ? self::SERVICE_REACHABILITY_RATE_LIMIT_TTL
+                ? max(1, (int) ($rate_limit['remaining_seconds'] ?? self::SERVICE_REACHABILITY_RATE_LIMIT_TTL))
                 : self::SERVICE_REACHABILITY_FAILURE_TTL
         );
 
@@ -312,6 +347,15 @@ final class Wayback_Api
 
     private function make_request_with_retry(string $url, string $method = 'GET'): array|\WP_Error
     {
+        $rate_limit = $this->get_rate_limit_status();
+        if (!empty($rate_limit['active'])) {
+            return new \WP_Error(
+                'rate_limited',
+                $this->format_rate_limit_error($rate_limit),
+                $rate_limit
+            );
+        }
+
         $last_error = null;
 
         for ($attempt = 0; $attempt < self::MAX_RETRIES; $attempt++) {
@@ -323,9 +367,25 @@ final class Wayback_Api
 
             if (!is_wp_error($response)) {
                 $code = wp_remote_retrieve_response_code($response);
-                
-                if ($code === 429 || $code === 503) {
-                    $last_error = new \WP_Error('rate_limited', 'Rate limited by Wayback Machine');
+
+                if ($code === 429) {
+                    $rate_limit = $this->store_rate_limit_status_from_response(
+                        $response,
+                        (int) (self::RETRY_DELAYS[$attempt] ?? self::SERVICE_REACHABILITY_RATE_LIMIT_TTL),
+                        'request_retry'
+                    );
+                    $last_error = new \WP_Error(
+                        'rate_limited',
+                        $this->format_rate_limit_error($rate_limit),
+                        $rate_limit
+                    );
+                    break;
+                }
+
+                $this->clear_rate_limit_status();
+
+                if ($code === 503) {
+                    $last_error = new \WP_Error('service_unavailable', 'Wayback Machine is temporarily unavailable');
                     $delay = self::RETRY_DELAYS[$attempt] ?? 8;
                     sleep($delay);
                     continue;
@@ -347,6 +407,90 @@ final class Wayback_Api
         }
 
         return $last_error ?: new \WP_Error('request_failed', 'Request failed after retries');
+    }
+
+    private function get_rate_limit_status(): array
+    {
+        $cached = get_transient(self::RATE_LIMIT_STATUS_CACHE_KEY);
+        if (!is_array($cached)) {
+            return ['active' => false, 'remaining_seconds' => 0];
+        }
+
+        $until = (int) ($cached['until'] ?? 0);
+        $remaining = max(0, $until - time());
+
+        if ($until <= 0 || $remaining <= 0) {
+            $this->clear_rate_limit_status();
+            return ['active' => false, 'remaining_seconds' => 0];
+        }
+
+        $cached['active'] = true;
+        $cached['remaining_seconds'] = $remaining;
+        $cached['until_iso'] = (string) ($cached['until_iso'] ?? wp_date('c', $until));
+
+        return $cached;
+    }
+
+    private function clear_rate_limit_status(): void
+    {
+        delete_transient(self::RATE_LIMIT_STATUS_CACHE_KEY);
+    }
+
+    private function store_rate_limit_status_from_response(array $response, int $fallbackSeconds, string $source): array
+    {
+        $retryAfterSeconds = $this->extract_retry_after_seconds($response, $fallbackSeconds);
+        $retryAfterSeconds = max(1, min(600, $retryAfterSeconds));
+        $until = time() + $retryAfterSeconds;
+
+        $status = [
+            'active' => true,
+            'reason' => 'Rate limited by Wayback Machine',
+            'status_code' => 429,
+            'checked_at' => current_time('c'),
+            'source' => $source,
+            'until' => $until,
+            'until_iso' => wp_date('c', $until),
+            'remaining_seconds' => $retryAfterSeconds,
+        ];
+
+        set_transient(self::RATE_LIMIT_STATUS_CACHE_KEY, $status, $retryAfterSeconds);
+
+        return $status;
+    }
+
+    private function extract_retry_after_seconds(array $response, int $fallbackSeconds): int
+    {
+        $retryAfter = wp_remote_retrieve_header($response, 'retry-after');
+
+        if (is_array($retryAfter)) {
+            $retryAfter = reset($retryAfter);
+        }
+
+        if (is_numeric($retryAfter)) {
+            return (int) $retryAfter;
+        }
+
+        if (is_string($retryAfter) && $retryAfter !== '') {
+            $timestamp = strtotime($retryAfter);
+            if ($timestamp !== false) {
+                return max(1, $timestamp - time());
+            }
+        }
+
+        return $fallbackSeconds;
+    }
+
+    private function format_rate_limit_error(array $rateLimit): string
+    {
+        $remaining = max(1, (int) ($rateLimit['remaining_seconds'] ?? 0));
+        $until = (string) ($rateLimit['until_iso'] ?? '');
+        $message = sprintf('Rate limited by Wayback Machine. Try again in %d second(s)', $remaining);
+
+        if ($until !== '') {
+            $message .= sprintf(' (after %s)', $until);
+        }
+
+        return $message;
     }
 
     private function make_request(string $url, string $method = 'GET'): array|\WP_Error
