@@ -50,14 +50,13 @@ final class Image_Restorer
         }
 
         if ($this->resources->should_stop('restore_start')) {
-            $result = [
-                'success' => false,
-                'error' => 'Resource limit reached',
-                'resource_limit' => true,
-            ];
-
-            $this->persist_restore_state($scan_id, $image_id, $result);
-            return $result;
+            return $this->create_resource_limit_failure(
+                $image_url,
+                'Resource limit reached',
+                'restore_start',
+                $scan_id,
+                $image_id
+            );
         }
 
         $this->mark_restore_started($scan_id, $image_id);
@@ -96,15 +95,17 @@ final class Image_Restorer
         $download_result = $this->download_image($image_url, $archive_url, $restore_mode);
 
         if (!$download_result['success']) {
-            $this->logger->error('restore_failed', [
-                'image_url' => $image_url,
-                'error'     => $download_result['error'],
-            ]);
+            $this->log_restore_failure($image_url, $download_result);
 
             $result = [
                 'success' => false,
-                'error'   => $download_result['error'],
+                'error' => $download_result['error'],
             ];
+
+            if (!empty($download_result['resource_limit'])) {
+                $result['resource_limit'] = true;
+                $result['resource_checkpoint'] = (string) ($download_result['resource_checkpoint'] ?? '');
+            }
 
             $this->persist_restore_state($scan_id, $image_id, $result);
             return $result;
@@ -130,15 +131,17 @@ final class Image_Restorer
             }
 
             if (!$import_result['success']) {
-                $this->logger->error('restore_failed', [
-                    'image_url' => $image_url,
-                    'error'     => $import_result['error'],
-                ]);
+                $this->log_restore_failure($image_url, $import_result);
 
                 $result = [
                     'success' => false,
-                    'error'   => $import_result['error'],
+                    'error' => $import_result['error'],
                 ];
+
+                if (!empty($import_result['resource_limit'])) {
+                    $result['resource_limit'] = true;
+                    $result['resource_checkpoint'] = (string) ($import_result['resource_checkpoint'] ?? '');
+                }
 
                 $this->persist_restore_state($scan_id, $image_id, $result);
                 return $result;
@@ -360,12 +363,51 @@ final class Image_Restorer
         $this->state_store->mark_restore_result($scan_id, $image_id, $result);
     }
 
+    private function create_resource_limit_failure(
+        string $image_url,
+        string $error,
+        string $checkpoint,
+        string $scan_id = '',
+        int $image_id = 0
+    ): array {
+        $result = [
+            'success' => false,
+            'error' => $error,
+            'resource_limit' => true,
+            'resource_checkpoint' => $checkpoint,
+        ];
+
+        $this->log_restore_failure($image_url, $result);
+
+        $this->persist_restore_state($scan_id, $image_id, $result);
+
+        return $result;
+    }
+
+    private function log_restore_failure(string $image_url, array $result): void
+    {
+        $log_data = [
+            'image_url' => $image_url,
+            'error' => (string) ($result['error'] ?? 'Unknown error'),
+        ];
+
+        if (!empty($result['resource_limit'])) {
+            $log_data['resource_limit'] = true;
+            $log_data['resource_checkpoint'] = (string) ($result['resource_checkpoint'] ?? '');
+            $log_data['resource_status'] = $this->resources->get_status();
+        }
+
+        $this->logger->error('restore_failed', $log_data);
+    }
+
     private function download_image(string $original_url, ?string $archive_url, string $restore_mode): array
     {
         if ($this->resources->should_stop('download_start')) {
             return [
                 'success' => false,
                 'error' => 'Resource limit reached',
+                'resource_limit' => true,
+                'resource_checkpoint' => 'download_start',
             ];
         }
 
@@ -376,6 +418,8 @@ final class Image_Restorer
                 return [
                     'success' => false,
                     'error' => 'Resource limit reached during download',
+                    'resource_limit' => true,
+                    'resource_checkpoint' => 'download_attempt',
                 ];
             }
 
@@ -438,6 +482,8 @@ final class Image_Restorer
             return [
                 'success' => false,
                 'error' => 'Resource limit reached',
+                'resource_limit' => true,
+                'resource_checkpoint' => 'import_start',
             ];
         }
 
@@ -918,6 +964,11 @@ final class Image_Restorer
             if ($this->resources->should_stop('bulk_restore_' . $index)) {
                 $result['stopped_early'] = true;
                 $result['stop_reason'] = 'resource_limit';
+                $this->logger->warning('bulk_restore_stopped_early', [
+                    'processed' => $result['processed'],
+                    'remaining' => max(0, count($image_ids) - $result['processed']),
+                    'resource_status' => $this->resources->get_status(),
+                ]);
                 break;
             }
 
@@ -1078,6 +1129,8 @@ final class Image_Restorer
             return [
                 'success' => false,
                 'error' => 'Resource limit reached',
+                'resource_limit' => true,
+                'resource_checkpoint' => 'restore_existing_attachment',
             ];
         }
 

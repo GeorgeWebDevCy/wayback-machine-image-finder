@@ -123,6 +123,8 @@ final class Wayback_Api
             return [
                 'success' => false,
                 'error' => 'Resource limit reached',
+                'resource_limit' => true,
+                'resource_checkpoint' => 'download_image_start',
             ];
         }
 
@@ -149,6 +151,8 @@ final class Wayback_Api
             return [
                 'success' => false,
                 'error' => 'Memory limit reached',
+                'resource_limit' => true,
+                'resource_checkpoint' => 'download_image_memory',
             ];
         }
 

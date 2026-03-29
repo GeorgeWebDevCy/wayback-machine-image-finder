@@ -5,7 +5,7 @@ Donate link: https://georgenicolaou.me
 Requires at least: 6.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.0.13
+Stable tag: 1.0.14
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -60,6 +60,9 @@ The plugin is designed to be resource-efficient. It uses batch processing, memor
 Yes! Enable "Dry Run Mode" to scan and see what would be restored without making any changes.
 
 == Changelog ==
+
+= 1.0.14 =
+* Log restore failures that stop because of resource limits with checkpoint metadata so the admin error is traceable in plugin logs
 
 = 1.0.13 =
 * Add persistent scan and restore state so long recovery runs can resume after page reloads
@@ -118,6 +121,9 @@ Yes! Enable "Dry Run Mode" to scan and see what would be restored without making
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.14 =
+Adds explicit restore log entries and checkpoint details when a restore is stopped by resource limits.
 
 = 1.0.13 =
 Adds resumable restore state, safer recovery tooling, and WP-CLI support for larger repair runs.
