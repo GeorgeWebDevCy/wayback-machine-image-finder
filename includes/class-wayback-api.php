@@ -19,6 +19,9 @@ final class Wayback_Api
         'jpeg' => ['jpg'],
     ];
 
+    private static array $temp_files = [];
+    private static bool $shutdown_cleanup_registered = false;
+
     private int $timeout;
     private Resource_Manager $resources;
 
@@ -28,13 +31,13 @@ final class Wayback_Api
         $this->timeout = $timeout ?? $this->resources->get_request_timeout();
     }
 
-    public function find_archive(string $url, ?string $target_date = null): ?array
+    public function find_archive(string $url, ?string $target_date = null, bool $explicit_target_date = false): ?array
     {
         if ($this->resources->should_stop('find_archive_start')) {
             return null;
         }
 
-        $resolved_target_date = $this->resolve_lookup_target_date($url, $target_date);
+        $resolved_target_date = $this->resolve_lookup_target_date($url, $target_date, $explicit_target_date);
         $last_error = null;
         $best_match = null;
         $best_rank = null;
@@ -152,13 +155,6 @@ final class Wayback_Api
         $content_type = wp_remote_retrieve_header($response, 'content-type');
         $mime_type = $this->parse_content_type($content_type);
 
-        if (!$this->is_valid_image_mime_type($mime_type)) {
-            return [
-                'success' => false,
-                'error' => 'Invalid image type: ' . $mime_type,
-            ];
-        }
-
         $tmp_file = $this->create_temp_file($body);
         if ($tmp_file === false) {
             return [
@@ -167,11 +163,32 @@ final class Wayback_Api
             ];
         }
 
+        $detected_mime_type = $this->detect_downloaded_image_mime_type($tmp_file);
+        $final_mime_type = $detected_mime_type ?? $mime_type;
+
+        if (!$this->is_valid_image_mime_type($final_mime_type)) {
+            $this->cleanup_temp_file($tmp_file);
+
+            return [
+                'success' => false,
+                'error' => 'Downloaded file is not a valid image',
+            ];
+        }
+
         return [
             'success' => true,
             'file' => $tmp_file,
-            'mime_type' => $mime_type,
+            'mime_type' => $final_mime_type,
         ];
+    }
+
+    public function cleanup_temp_file(string $file): void
+    {
+        unset(self::$temp_files[$file]);
+
+        if (is_file($file)) {
+            @unlink($file);
+        }
     }
 
     public function check_url_accessibility(string $url): array
@@ -384,8 +401,16 @@ final class Wayback_Api
         return $last_error;
     }
 
-    private function resolve_lookup_target_date(string $url, ?string $fallback_target_date): ?string
+    private function resolve_lookup_target_date(
+        string $url,
+        ?string $fallback_target_date,
+        bool $explicit_target_date = false
+    ): ?string
     {
+        if ($explicit_target_date && $fallback_target_date !== null && $fallback_target_date !== '') {
+            return $fallback_target_date;
+        }
+
         $upload_target_date = $this->extract_upload_target_date($url);
 
         if ($upload_target_date !== null) {
@@ -512,6 +537,89 @@ final class Wayback_Api
             return false;
         }
 
+        $this->register_temp_file($file);
+
         return $file;
+    }
+
+    private function detect_downloaded_image_mime_type(string $file): ?string
+    {
+        if ($this->file_looks_like_svg($file)) {
+            return 'image/svg+xml';
+        }
+
+        if (function_exists('finfo_open')) {
+            $finfo = @finfo_open(FILEINFO_MIME_TYPE);
+            if ($finfo !== false) {
+                $mime_type = @finfo_file($finfo, $file);
+                finfo_close($finfo);
+
+                if (is_string($mime_type) && $mime_type !== '') {
+                    $mime_type = strtolower(trim($mime_type));
+                    if ($mime_type === 'image/svg' || $mime_type === 'text/xml') {
+                        return 'image/svg+xml';
+                    }
+
+                    if ($this->is_valid_image_mime_type($mime_type)) {
+                        return $mime_type;
+                    }
+                }
+            }
+        }
+
+        if (function_exists('getimagesize')) {
+            $image_info = @getimagesize($file);
+            if (is_array($image_info) && !empty($image_info['mime'])) {
+                $mime_type = strtolower((string) $image_info['mime']);
+                if ($this->is_valid_image_mime_type($mime_type)) {
+                    return $mime_type;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function file_looks_like_svg(string $file): bool
+    {
+        $handle = @fopen($file, 'rb');
+        if ($handle === false) {
+            return false;
+        }
+
+        $snippet = fread($handle, 4096);
+        fclose($handle);
+
+        if (!is_string($snippet) || $snippet === '') {
+            return false;
+        }
+
+        $snippet = strtolower(ltrim($snippet));
+        if (str_starts_with($snippet, '<?xml')) {
+            return str_contains($snippet, '<svg');
+        }
+
+        return str_contains($snippet, '<svg');
+    }
+
+    private function register_temp_file(string $file): void
+    {
+        self::$temp_files[$file] = true;
+
+        if (!self::$shutdown_cleanup_registered) {
+            register_shutdown_function([self::class, 'cleanup_registered_temp_files']);
+            self::$shutdown_cleanup_registered = true;
+        }
+    }
+
+    public static function cleanup_registered_temp_files(): void
+    {
+        foreach (array_keys(self::$temp_files) as $file) {
+            if (is_string($file) && is_file($file)) {
+                @unlink($file);
+            }
+        }
+
+        self::$temp_files = [];
     }
 }

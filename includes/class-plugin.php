@@ -74,7 +74,10 @@ final class Wayback_Image_Restorer
         $this->loader->add_action('wp_ajax_wir_get_results', $ajax, 'handle_get_results');
         $this->loader->add_action('wp_ajax_wir_get_media_candidates', $ajax, 'handle_get_media_candidates');
         $this->loader->add_action('wp_ajax_wir_enrich_media_failures', $ajax, 'handle_enrich_media_failures');
+        $this->loader->add_action('wp_ajax_wir_merge_browser_results', $ajax, 'handle_merge_browser_results');
+        $this->loader->add_action('wp_ajax_wir_lookup_archive', $ajax, 'handle_lookup_archive');
         $this->loader->add_action('wp_ajax_wir_restore', $ajax, 'handle_restore');
+        $this->loader->add_action('wp_ajax_wir_undo_restore', $ajax, 'handle_undo_restore');
         $this->loader->add_action('wp_ajax_wir_bulk_restore', $ajax, 'handle_bulk_restore');
         $this->loader->add_action('wp_ajax_wir_get_logs', $ajax, 'handle_get_logs');
         $this->loader->add_action('wp_ajax_wir_clear_logs', $ajax, 'handle_clear_logs');

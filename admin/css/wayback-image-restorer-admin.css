@@ -57,6 +57,16 @@
     margin-bottom: 20px;
 }
 
+.wir-dry-run-indicator {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border-left: 4px solid #dba617;
+    background: #fff8e5;
+    color: #6b4f00;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
 .wir-status {
     font-style: italic;
     color: #666;
@@ -127,6 +137,10 @@
     background: #f8f9fa;
 }
 
+.wir-results tr.wir-row-restored {
+    background: #f6ffed;
+}
+
 .wir-image-preview {
     width: 60px;
     height: 60px;
@@ -173,8 +187,46 @@
     color: #d63638;
 }
 
+.wir-archive-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wir-archive-date-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    color: #50575e;
+}
+
+.wir-archive-date-label input {
+    max-width: 160px;
+}
+
 .wir-actions-cell {
     white-space: nowrap;
+}
+
+.wir-restore-complete {
+    color: #00a32a;
+    font-weight: 600;
+}
+
+.wir-actions-cell .button + .button,
+.wir-actions-cell .wir-restore-complete + .button {
+    margin-left: 6px;
+}
+
+.wir-restore-error {
+    display: inline-block;
+    margin-left: 6px;
+    color: #d63638;
+    font-size: 11px;
+    max-width: 220px;
+    white-space: normal;
+    vertical-align: middle;
 }
 
 .wir-empty-state {

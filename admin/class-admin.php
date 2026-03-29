@@ -175,15 +175,15 @@ final class Admin
         wp_localize_script('wir-admin', 'wirData', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('wir_nonce'),
-                'strings' => [
-                    'scanning' => __('Scanning...', 'wayback-image-restorer'),
-                    'scanComplete' => __('Scan complete!', 'wayback-image-restorer'),
-                    'scanInProgress' => __('Scan in progress', 'wayback-image-restorer'),
-                    'scanElapsed' => __('Elapsed', 'wayback-image-restorer'),
-                    'scanStageBrowser' => __('Verifying media library URLs from the browser...', 'wayback-image-restorer'),
-                    'scanActivityTitle' => __('Recent Scan Activity', 'wayback-image-restorer'),
-                    'scanActivityLoading' => __('Loading scan activity...', 'wayback-image-restorer'),
-                    'scanActivityEmpty' => __('No scan activity was recorded for this run.', 'wayback-image-restorer'),
+            'strings' => [
+                'scanning' => __('Scanning...', 'wayback-image-restorer'),
+                'scanComplete' => __('Scan complete!', 'wayback-image-restorer'),
+                'scanInProgress' => __('Scan in progress', 'wayback-image-restorer'),
+                'scanElapsed' => __('Elapsed', 'wayback-image-restorer'),
+                'scanStageBrowser' => __('Verifying media library URLs from the browser...', 'wayback-image-restorer'),
+                'scanActivityTitle' => __('Recent Scan Activity', 'wayback-image-restorer'),
+                'scanActivityLoading' => __('Loading scan activity...', 'wayback-image-restorer'),
+                'scanActivityEmpty' => __('No scan activity was recorded for this run.', 'wayback-image-restorer'),
                 'scanActivityError' => __('Unable to load scan activity.', 'wayback-image-restorer'),
                 'scanStagePrepare' => __('Preparing scan request...', 'wayback-image-restorer'),
                 'scanStagePosts' => __('Scanning posts and pages for image references...', 'wayback-image-restorer'),
@@ -192,8 +192,23 @@ final class Admin
                 'scanStageMedia' => __('Checking media library attachments...', 'wayback-image-restorer'),
                 'scanStageFinalize' => __('Finalizing scan results...', 'wayback-image-restorer'),
                 'restoring' => __('Restoring...', 'wayback-image-restorer'),
+                'restoreFailed' => __('Restore failed', 'wayback-image-restorer'),
+                'restored' => __('Restored', 'wayback-image-restorer'),
+                'undoRestore' => __('Undo Restore', 'wayback-image-restorer'),
+                'undoing' => __('Undoing...', 'wayback-image-restorer'),
+                'archiveDate' => __('Archive Date', 'wayback-image-restorer'),
+                'recheckArchive' => __('Recheck Archive', 'wayback-image-restorer'),
+                'lookingUpArchive' => __('Looking up archive...', 'wayback-image-restorer'),
                 'confirmRestore' => __('Are you sure you want to restore the selected images?', 'wayback-image-restorer'),
+                'confirmUndo' => __('Undo this restore? This will restore the previous URL references and remove the imported attachment.', 'wayback-image-restorer'),
                 'confirmClear' => __('Are you sure you want to clear all logs?', 'wayback-image-restorer'),
+                'dryRunComplete' => __('Dry run complete. No changes were made.', 'wayback-image-restorer'),
+                'dryRunActive' => __('Dry-run mode is active. Restores will be simulated only.', 'wayback-image-restorer'),
+                'startScan' => __('Start Scan', 'wayback-image-restorer'),
+                'startDryRunScan' => __('Start Dry-Run Scan', 'wayback-image-restorer'),
+                'loadingSavedResults' => __('Loading the most recent saved scan results...', 'wayback-image-restorer'),
+                'loadedSavedResults' => __('Loaded the most recent saved scan results.', 'wayback-image-restorer'),
+                'undoComplete' => __('Restore undone.', 'wayback-image-restorer'),
                 'success' => __('Success', 'wayback-image-restorer'),
                 'error' => __('Error', 'wayback-image-restorer'),
             ],
@@ -233,6 +248,8 @@ final class Admin
                         </button>
                         <span id="wir-scan-status" class="wir-status"></span>
                     </div>
+
+                    <div id="wir-dry-run-indicator" class="wir-dry-run-indicator" style="display: none;"></div>
 
                     <div id="wir-scan-results" class="wir-results">
                         <p class="description">

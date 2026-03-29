@@ -11,10 +11,14 @@ if (!defined('ABSPATH')) {
 final class Ajax
 {
     private \Wayback_Image_Restorer\Logger $logger;
+    private \Wayback_Image_Restorer\State_Store $state_store;
+    private \Wayback_Image_Restorer\Operation_Lock $operation_lock;
 
     public function __construct()
     {
         $this->logger = \Wayback_Image_Restorer\Logger::get_instance();
+        $this->state_store = new \Wayback_Image_Restorer\State_Store();
+        $this->operation_lock = new \Wayback_Image_Restorer\Operation_Lock();
     }
 
     public function handle_scan(): void
@@ -44,12 +48,19 @@ final class Ajax
             $args['date_to'] = sanitize_text_field($_POST['date_to']);
         }
 
-        $scanner = new \Wayback_Image_Restorer\Image_Scanner();
-        $results = $scanner->scan($args);
+        $lock_error = $this->acquire_lock_error('scan', 30 * MINUTE_IN_SECONDS);
+        if ($lock_error !== null) {
+            wp_send_json_error($lock_error);
+            return;
+        }
 
-        set_transient('wir_current_scan_id', $scanner->get_scan_id(), HOUR_IN_SECONDS);
-        set_transient('wir_last_scan_id', $scanner->get_scan_id(), HOUR_IN_SECONDS);
-        update_option('wir_last_scan_id', $scanner->get_scan_id());
+        $scanner = new \Wayback_Image_Restorer\Image_Scanner();
+        try {
+            $results = $scanner->scan($args);
+            $this->state_store->set_last_scan_id($scanner->get_scan_id());
+        } finally {
+            $this->operation_lock->release('scan');
+        }
 
         wp_send_json_success([
             'scan_id' => $results['scan_id'],
@@ -73,12 +84,12 @@ final class Ajax
         $scan_id = sanitize_text_field($_POST['scan_id'] ?? '');
         
         if (empty($scan_id)) {
-            $scan_id = get_option('wir_last_scan_id', '');
+            $scan_id = $this->state_store->get_last_scan_id();
         }
 
-        $results = get_transient('wir_last_scan_' . $scan_id);
+        $results = $this->state_store->get_scan_results($scan_id);
 
-        if ($results === false) {
+        if (!is_array($results)) {
             wp_send_json_error(['message' => __('Scan results expired or not found', 'wayback-image-restorer')]);
             return;
         }
@@ -187,6 +198,7 @@ final class Ajax
                 'id' => count($broken_images) + 1,
                 'url' => $url,
                 'type' => 'local',
+                'target_date' => $target_date,
                 'referenced_in' => [[
                     'post_id' => $attachment_id,
                     'post_title' => $post_title,
@@ -217,26 +229,83 @@ final class Ajax
         $image_url = esc_url_raw($_POST['image_url'] ?? '');
         $archive_url = isset($_POST['archive_url']) ? esc_url_raw($_POST['archive_url']) : null;
         $dry_run = $this->get_request_bool('dry_run');
-        $referenced_in = $this->get_referenced_in_payload($image_url);
+        $scan_id = sanitize_text_field((string) ($_POST['scan_id'] ?? ''));
+        $referenced_in = $this->get_referenced_in_payload($image_url, $scan_id);
 
         if (empty($image_url)) {
             wp_send_json_error(['message' => __('No image URL provided', 'wayback-image-restorer')]);
             return;
         }
 
+        $lock_error = $this->acquire_lock_error('restore', 15 * MINUTE_IN_SECONDS);
+        if ($lock_error !== null) {
+            wp_send_json_error($lock_error);
+            return;
+        }
+
+        $image_id = absint($_POST['image_id'] ?? 0);
+        $target_date = !empty($_POST['target_date']) ? sanitize_text_field((string) $_POST['target_date']) : null;
         $restorer = new \Wayback_Image_Restorer\Image_Restorer();
-        $result = $restorer->restore([
-            'url' => $image_url,
-            'archive_url' => $archive_url,
-            'dry_run' => $dry_run,
-            'referenced_in' => $referenced_in,
-        ]);
+        try {
+            $result = $restorer->restore([
+                'id' => $image_id,
+                'scan_id' => $scan_id,
+                'url' => $image_url,
+                'archive_url' => $archive_url,
+                'target_date' => $target_date,
+                'dry_run' => $dry_run,
+                'referenced_in' => $referenced_in,
+            ]);
+        } finally {
+            $this->operation_lock->release('restore');
+        }
 
         if ($result['success']) {
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
         }
+    }
+
+    public function handle_undo_restore(): void
+    {
+        check_ajax_referer('wir_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $attachment_id = absint($_POST['attachment_id'] ?? 0);
+        if ($attachment_id <= 0) {
+            wp_send_json_error(['message' => __('No attachment provided', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $lock_error = $this->acquire_lock_error('restore', 15 * MINUTE_IN_SECONDS);
+        if ($lock_error !== null) {
+            wp_send_json_error($lock_error);
+            return;
+        }
+
+        $scan_id = sanitize_text_field((string) ($_POST['scan_id'] ?? ''));
+        $image_id = absint($_POST['image_id'] ?? 0);
+        $restorer = new \Wayback_Image_Restorer\Image_Restorer();
+        try {
+            $result = $restorer->undo_restore($attachment_id);
+        } finally {
+            $this->operation_lock->release('restore');
+        }
+
+        if (!empty($result['success']) && $scan_id !== '' && $image_id > 0) {
+            $this->state_store->clear_restore_result($scan_id, $image_id);
+        }
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        }
+
+        wp_send_json_error($result);
     }
 
     public function handle_bulk_restore(): void
@@ -251,7 +320,15 @@ final class Ajax
         $image_ids = isset($_POST['image_ids']) && is_array($_POST['image_ids'])
             ? array_map('absint', $_POST['image_ids'])
             : [];
-        
+        $provided_images = $this->get_bulk_images_payload();
+        $scan_id = sanitize_text_field((string) ($_POST['scan_id'] ?? ''));
+        if (empty($image_ids) && !empty($provided_images)) {
+            $image_ids = array_values(array_map(
+                static fn(array $image): int => (int) $image['id'],
+                $provided_images
+            ));
+        }
+
         $dry_run = $this->get_request_bool('dry_run');
 
         if (empty($image_ids)) {
@@ -259,8 +336,18 @@ final class Ajax
             return;
         }
 
+        $lock_error = $this->acquire_lock_error('restore', 30 * MINUTE_IN_SECONDS);
+        if ($lock_error !== null) {
+            wp_send_json_error($lock_error);
+            return;
+        }
+
         $restorer = new \Wayback_Image_Restorer\Image_Restorer();
-        $result = $restorer->bulk_restore($image_ids, $dry_run);
+        try {
+            $result = $restorer->bulk_restore($image_ids, $dry_run, $provided_images, $scan_id);
+        } finally {
+            $this->operation_lock->release('restore');
+        }
 
         if ($result['success']) {
             wp_send_json_success($result);
@@ -366,12 +453,12 @@ final class Ajax
         return $parsed ?? $default;
     }
 
-    private function get_referenced_in_payload(string $image_url): array
+    private function get_referenced_in_payload(string $image_url, string $preferred_scan_id = ''): array
     {
         if (isset($_POST['referenced_in'])) {
             $decoded = json_decode((string) wp_unslash($_POST['referenced_in']), true);
             if (is_array($decoded) && !empty($decoded)) {
-                return $decoded;
+                return $this->sanitize_referenced_in_payload($decoded);
             }
         }
 
@@ -380,12 +467,13 @@ final class Ajax
         }
 
         $scan_ids = array_unique(array_filter([
-            (string) get_transient('wir_current_scan_id'),
-            (string) get_option('wir_last_scan_id', ''),
+            $preferred_scan_id,
+            $this->state_store->get_current_scan_id(),
+            $this->state_store->get_last_scan_id(),
         ]));
 
         foreach ($scan_ids as $scan_id) {
-            $results = get_transient('wir_last_scan_' . $scan_id);
+            $results = $this->state_store->get_scan_results((string) $scan_id);
             if (!is_array($results) || empty($results['broken_images']) || !is_array($results['broken_images'])) {
                 continue;
             }
@@ -396,10 +484,182 @@ final class Ajax
                 }
 
                 $referenced_in = $image['referenced_in'] ?? [];
-                return is_array($referenced_in) ? $referenced_in : [];
+                return is_array($referenced_in) ? $this->sanitize_referenced_in_payload($referenced_in) : [];
             }
         }
 
         return [];
+    }
+
+    public function handle_merge_browser_results(): void
+    {
+        check_ajax_referer('wir_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $scan_id = sanitize_text_field((string) ($_POST['scan_id'] ?? ''));
+        $decoded = json_decode((string) wp_unslash($_POST['broken_images'] ?? ''), true);
+
+        if ($scan_id === '' || !is_array($decoded)) {
+            wp_send_json_error(['message' => __('No scan data provided', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $images = [];
+        foreach ($decoded as $image) {
+            $sanitized = $this->sanitize_bulk_image_payload($image);
+            if ($sanitized === null) {
+                continue;
+            }
+
+            $sanitized['target_date'] = !empty($image['target_date'])
+                ? sanitize_text_field((string) $image['target_date'])
+                : null;
+            $sanitized['archive_found'] = !empty($image['archive_found']);
+            $sanitized['archive_url'] = isset($image['archive_url']) ? esc_url_raw((string) $image['archive_url']) : null;
+            $sanitized['archive_timestamp'] = !empty($image['archive_timestamp'])
+                ? sanitize_text_field((string) $image['archive_timestamp'])
+                : null;
+            $sanitized['type'] = sanitize_text_field((string) ($image['type'] ?? 'local'));
+            $sanitized['last_checked'] = sanitize_text_field((string) ($image['last_checked'] ?? current_time('c')));
+            $images[] = $sanitized;
+        }
+
+        $results = $this->state_store->merge_browser_verified_images($scan_id, $images);
+        if (!is_array($results)) {
+            wp_send_json_error(['message' => __('Scan results expired or not found', 'wayback-image-restorer')]);
+            return;
+        }
+
+        wp_send_json_success($results);
+    }
+
+    public function handle_lookup_archive(): void
+    {
+        check_ajax_referer('wir_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $image_url = esc_url_raw((string) ($_POST['image_url'] ?? ''));
+        $target_date = !empty($_POST['target_date']) ? sanitize_text_field((string) $_POST['target_date']) : null;
+        $scan_id = sanitize_text_field((string) ($_POST['scan_id'] ?? ''));
+        $image_id = absint($_POST['image_id'] ?? 0);
+
+        if ($image_url === '') {
+            wp_send_json_error(['message' => __('No image URL provided', 'wayback-image-restorer')]);
+            return;
+        }
+
+        $api = new \Wayback_Image_Restorer\Wayback_Api();
+        $archive_info = $api->find_archive($image_url, $target_date, $target_date !== null);
+
+        if ($scan_id !== '' && $image_id > 0) {
+            $this->state_store->update_scan_image($scan_id, $image_id, static function (array $image) use ($archive_info, $target_date): array {
+                $image['target_date'] = $target_date;
+                $image['archive_found'] = $archive_info !== null;
+                $image['archive_url'] = $archive_info['archive_url'] ?? null;
+                $image['archive_timestamp'] = $archive_info['timestamp'] ?? null;
+                $image['last_checked'] = current_time('c');
+                return $image;
+            });
+        }
+
+        wp_send_json_success([
+            'archive_found' => $archive_info !== null,
+            'archive_url' => $archive_info['archive_url'] ?? null,
+            'archive_timestamp' => $archive_info['timestamp'] ?? null,
+            'target_date' => $target_date,
+        ]);
+    }
+
+    private function get_bulk_images_payload(): array
+    {
+        if (!isset($_POST['images'])) {
+            return [];
+        }
+
+        $decoded = json_decode((string) wp_unslash($_POST['images']), true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $images = [];
+        foreach ($decoded as $image) {
+            $sanitized = $this->sanitize_bulk_image_payload($image);
+            if ($sanitized !== null) {
+                $images[] = $sanitized;
+            }
+        }
+
+        return $images;
+    }
+
+    private function sanitize_bulk_image_payload($image): ?array
+    {
+        if (!is_array($image)) {
+            return null;
+        }
+
+        $id = absint($image['id'] ?? 0);
+        $url = esc_url_raw((string) ($image['url'] ?? ''));
+        if ($id <= 0 || $url === '') {
+            return null;
+        }
+
+        $archive_url = isset($image['archive_url']) ? esc_url_raw((string) $image['archive_url']) : null;
+        $referenced_in = $this->sanitize_referenced_in_payload(
+            isset($image['referenced_in']) && is_array($image['referenced_in']) ? $image['referenced_in'] : []
+        );
+
+        return [
+            'id' => $id,
+            'url' => $url,
+            'archive_url' => $archive_url ?: null,
+            'referenced_in' => $referenced_in,
+            'target_date' => !empty($image['target_date']) ? sanitize_text_field((string) $image['target_date']) : null,
+        ];
+    }
+
+    private function sanitize_referenced_in_payload(array $references): array
+    {
+        $sanitized = [];
+
+        foreach ($references as $reference) {
+            if (!is_array($reference)) {
+                continue;
+            }
+
+            $sanitized[] = [
+                'post_id' => absint($reference['post_id'] ?? 0),
+                'post_title' => sanitize_text_field((string) ($reference['post_title'] ?? '')),
+                'context' => sanitize_text_field((string) ($reference['context'] ?? '')),
+            ];
+        }
+
+        return $sanitized;
+    }
+
+    private function acquire_lock_error(string $operation, int $ttl): ?array
+    {
+        if ($this->operation_lock->acquire($operation, $ttl, ['screen' => 'admin_ajax'])) {
+            return null;
+        }
+
+        $lock = $this->operation_lock->get_active_lock($operation);
+        $started_at = is_array($lock) ? (string) ($lock['started_at'] ?? '') : '';
+
+        return [
+            'message' => $started_at !== ''
+                ? sprintf(__('Another %s operation started at %s is still running. Please wait and try again.', 'wayback-image-restorer'), $operation, $started_at)
+                : sprintf(__('Another %s operation is already running. Please wait and try again.', 'wayback-image-restorer'), $operation),
+            'operation' => $operation,
+            'lock' => $lock,
+        ];
     }
 }

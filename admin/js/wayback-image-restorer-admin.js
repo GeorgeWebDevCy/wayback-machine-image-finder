@@ -12,6 +12,8 @@
 
         init: function() {
             this.bindEvents();
+            this.updateDryRunIndicator();
+            this.loadPersistedResults();
         },
 
         bindEvents: function() {
@@ -20,6 +22,7 @@
             $('#wir-download-logs').on('click', $.proxy(this.downloadLogs, this));
             $('#wir-clear-logs').on('click', $.proxy(this.clearLogs, this));
             $('#wir-rotate-logs').on('click', $.proxy(this.rotateLogs, this));
+            $('#wir_dry_run').on('change', $.proxy(this.updateDryRunIndicator, this));
             
             this.bindModalEvents();
             this.bindLogViewerEvents();
@@ -180,11 +183,69 @@
                         post_title: item.post_title || '',
                         context: item.context || 'media_library'
                     }],
+                    target_date: item.target_date || null,
                     archive_found: false,
                     archive_url: null,
                     archive_timestamp: null,
                     last_checked: timestamp
                 };
+            });
+        },
+
+        loadPersistedResults: function() {
+            const $status = $('#wir-scan-status');
+            $status.removeClass('error success').text(wirData.strings.loadingSavedResults || 'Loading the most recent saved scan results...');
+
+            $.ajax({
+                url: wirData.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'wir_get_results',
+                    nonce: wirData.nonce
+                },
+                success: $.proxy(function(response) {
+                    if (!response.success || !response.data || !response.data.scan_id) {
+                        $status.text('');
+                        return;
+                    }
+
+                    this.currentScanId = response.data.scan_id;
+                    this.currentResults = response.data;
+                    this.displayResults(response.data);
+                    $status.addClass('success').text(wirData.strings.loadedSavedResults || 'Loaded the most recent saved scan results.');
+                }, this),
+                error: function() {
+                    $status.text('');
+                }
+            });
+        },
+
+        updateDryRunIndicator: function() {
+            const isDryRun = $('#wir_dry_run').is(':checked');
+            const $indicator = $('#wir-dry-run-indicator');
+            const $button = $('#wir-start-scan');
+
+            if (isDryRun) {
+                $indicator.text(wirData.strings.dryRunActive || 'Dry-run mode is active. Restores will be simulated only.').show();
+                $button.text(wirData.strings.startDryRunScan || 'Start Dry-Run Scan');
+            } else {
+                $indicator.hide().text('');
+                $button.text(wirData.strings.startScan || 'Start Scan');
+            }
+        },
+
+        syncBrowserResults: function(scanId, brokenImages) {
+            if (!scanId || !Array.isArray(brokenImages) || brokenImages.length === 0) {
+                return Promise.resolve(null);
+            }
+
+            return this.postAjax({
+                action: 'wir_merge_browser_results',
+                nonce: wirData.nonce,
+                scan_id: scanId,
+                broken_images: JSON.stringify(brokenImages)
+            }, {
+                timeout: 30000
             });
         },
 
@@ -207,6 +268,7 @@
             let offset = 0;
             let hasMore = true;
             let browserVerifiedBroken = 0;
+            const addedBrowserRecords = [];
 
             while (hasMore) {
                 if ($status && $status.length) {
@@ -267,6 +329,7 @@
                         verifiedData.broken_images.push(image);
                         existingUrls.add(image.url);
                         browserVerifiedBroken += 1;
+                        addedBrowserRecords.push($.extend(true, {}, image));
                     });
                 }
 
@@ -277,6 +340,17 @@
             verifiedData.stats = verifiedData.stats || {};
             verifiedData.stats.images_broken = verifiedData.broken_images.length;
             verifiedData.stats.browser_verified_broken = browserVerifiedBroken;
+
+            if (addedBrowserRecords.length > 0) {
+                try {
+                    const syncResponse = await this.syncBrowserResults(verifiedData.scan_id, addedBrowserRecords);
+                    if (syncResponse && syncResponse.success && syncResponse.data) {
+                        return syncResponse.data;
+                    }
+                } catch (error) {
+                    return verifiedData;
+                }
+            }
 
             return verifiedData;
         },
@@ -382,14 +456,15 @@
                 }, this),
                 complete: $.proxy(function() {
                     this.stopScanProgress();
-                    $btn.prop('disabled', false).text('Start Scan');
+                    $btn.prop('disabled', false);
+                    this.updateDryRunIndicator();
                 }, this)
             });
         },
 
         displayResults: function(data) {
-            const stats = data.stats;
-            const brokenImages = data.broken_images;
+            const stats = data.stats || {};
+            const brokenImages = Array.isArray(data.broken_images) ? data.broken_images : [];
             const durationSeconds = this.getDurationSeconds(data);
             
             let html = `
@@ -437,27 +512,24 @@
                     const archiveText = img.archive_found 
                         ? 'Found (' + this.formatTimestamp(img.archive_timestamp) + ')' 
                         : 'Not Found';
-                    
-                    const postsList = img.referenced_in.map(function(ref) {
+                    const postsList = (Array.isArray(img.referenced_in) ? img.referenced_in : []).map(function(ref) {
                         return ref.post_title + ' (' + ref.context + ')';
                     }).join(', ');
+                    const escapedUrl = this.escapeHtml(img.url || '');
+                    const escapedPostsList = this.escapeHtml(postsList);
+                    const rowClass = this.isImageRestored(img) ? ' class="wir-row-restored"' : '';
 
                     html += `
-                        <tr data-id="${img.id}">
-                            <td><input type="checkbox" class="wir-image-checkbox" value="${img.id}"></td>
+                        <tr data-id="${img.id}"${rowClass}>
+                            <td>${this.renderSelectionCell(img)}</td>
                             <td>
                                 <div class="wir-broken-icon">&#9888;</div>
                             </td>
-                            <td class="wir-url-cell" title="${img.url}">${img.url}</td>
-                            <td class="wir-posts-cell" title="${postsList}">${postsList}</td>
-                            <td>
-                                <span class="wir-archive-status ${archiveClass}">
-                                    ${archiveIcon} ${archiveText}
-                                </span>
-                            </td>
+                            <td class="wir-url-cell" title="${escapedUrl}">${escapedUrl}</td>
+                            <td class="wir-posts-cell" title="${escapedPostsList}">${escapedPostsList}</td>
+                            <td>${this.renderArchiveCell(img, archiveClass, archiveIcon, archiveText)}</td>
                             <td class="wir-actions-cell">
-                                ${img.archive_found ? '<button class="button wir-restore-single" data-id="' + img.id + '">Restore</button>' : ''}
-                                <button class="button wir-ignore" data-id="${img.id}">Ignore</button>
+                                ${this.renderImageActions(img)}
                             </td>
                         </tr>
                     `;
@@ -510,6 +582,25 @@
                 this.restoreImage(Number($btn.data('id')), $btn);
             }, this));
 
+            $('.wir-undo-restore').on('click', $.proxy(function(e) {
+                const $btn = $(e.currentTarget);
+                this.undoRestore(Number($btn.data('id')), Number($btn.data('attachment-id')), $btn);
+            }, this));
+
+            $('.wir-ignore').on('click', $.proxy(function(e) {
+                this.ignoreImage(Number($(e.currentTarget).data('id')));
+            }, this));
+
+            $('.wir-target-date').on('change', $.proxy(function(e) {
+                const $input = $(e.currentTarget);
+                this.updateImageTargetDate(Number($input.data('id')), String($input.val() || ''));
+            }, this));
+
+            $('.wir-refresh-archive').on('click', $.proxy(function(e) {
+                const $btn = $(e.currentTarget);
+                this.lookupArchive(Number($btn.data('id')), $btn);
+            }, this));
+
             $('#wir-restore-selected').on('click', $.proxy(function() {
                 const selected = $('.wir-image-checkbox:checked').map(function() {
                     return $(this).val();
@@ -548,6 +639,213 @@
             return this.currentResults.broken_images.find(function(img) {
                 return Number(img.id) === Number(imageId);
             }) || null;
+        },
+
+        isImageRestored: function(image) {
+            return Boolean(image && Number(image.restored_attachment_id || 0) > 0);
+        },
+
+        renderSelectionCell: function(image) {
+            if (this.isImageRestored(image)) {
+                return '';
+            }
+
+            return `<input type="checkbox" class="wir-image-checkbox" value="${Number(image.id)}">`;
+        },
+
+        renderImageActions: function(image) {
+            if (this.isImageRestored(image)) {
+                let html = `<span class="wir-restore-complete">&#10004; ${this.escapeHtml(wirData.strings.restored || 'Restored')}</span>`;
+
+                if (image.undo_available && Number(image.restored_attachment_id || 0) > 0) {
+                    html += ` <button class="button wir-undo-restore" data-id="${Number(image.id)}" data-attachment-id="${Number(image.restored_attachment_id)}">${this.escapeHtml(wirData.strings.undoRestore || 'Undo Restore')}</button>`;
+                }
+
+                return html;
+            }
+
+            let html = '';
+            if (image.archive_found) {
+                html += `<button class="button wir-restore-single" data-id="${Number(image.id)}">Restore</button> `;
+            }
+
+            html += `<button class="button wir-ignore" data-id="${Number(image.id)}">Ignore</button>`;
+
+            if (image.restore_status === 'failed' && image.restore_error) {
+                html += ` <span class="wir-restore-error">${this.escapeHtml(image.restore_error)}</span>`;
+            }
+
+            return html;
+        },
+
+        renderArchiveCell: function(image, archiveClass, archiveIcon, archiveText) {
+            const targetDateValue = this.formatTargetDateInputValue(image.target_date || '');
+
+            return `
+                <div class="wir-archive-cell">
+                    <span class="wir-archive-status ${archiveClass}">
+                        ${archiveIcon} ${this.escapeHtml(archiveText)}
+                    </span>
+                    <label class="wir-archive-date-label">
+                        <span>${this.escapeHtml(wirData.strings.archiveDate || 'Archive Date')}</span>
+                        <input type="date" class="wir-target-date" data-id="${Number(image.id)}" value="${this.escapeHtml(targetDateValue)}">
+                    </label>
+                    <button type="button" class="button button-small wir-refresh-archive" data-id="${Number(image.id)}">
+                        ${this.escapeHtml(wirData.strings.recheckArchive || 'Recheck Archive')}
+                    </button>
+                </div>
+            `;
+        },
+
+        formatTargetDateInputValue: function(value) {
+            if (!value) {
+                return '';
+            }
+
+            const normalized = String(value).trim();
+            const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (isoMatch) {
+                return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+            }
+
+            const compactMatch = normalized.match(/^(\d{4})(\d{2})(\d{2})/);
+            if (compactMatch) {
+                return `${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]}`;
+            }
+
+            const parsed = new Date(normalized);
+            if (Number.isNaN(parsed.getTime())) {
+                return '';
+            }
+
+            const year = parsed.getFullYear();
+            const month = String(parsed.getMonth() + 1).padStart(2, '0');
+            const day = String(parsed.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        },
+
+        updateImageTargetDate: function(imageId, value) {
+            const image = this.getImageById(imageId);
+            if (!image) {
+                return;
+            }
+
+            image.target_date = value || null;
+        },
+
+        lookupArchive: function(imageId, $btn) {
+            const image = this.getImageById(imageId);
+            if (!image) {
+                alert('Image data is no longer available. Please run the scan again.');
+                return;
+            }
+
+            $btn.prop('disabled', true).text(wirData.strings.lookingUpArchive || 'Looking up archive...');
+
+            $.ajax({
+                url: wirData.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'wir_lookup_archive',
+                    nonce: wirData.nonce,
+                    scan_id: this.currentScanId || '',
+                    image_id: Number(image.id),
+                    image_url: image.url,
+                    target_date: image.target_date || ''
+                },
+                success: $.proxy(function(response) {
+                    if (response.success && response.data) {
+                        image.archive_found = Boolean(response.data.archive_found);
+                        image.archive_url = response.data.archive_url || null;
+                        image.archive_timestamp = response.data.archive_timestamp || null;
+                        image.target_date = response.data.target_date || image.target_date || null;
+                        image.last_checked = new Date().toISOString();
+                        this.displayResults(this.currentResults);
+                    } else {
+                        $btn.prop('disabled', false).text(wirData.strings.recheckArchive || 'Recheck Archive');
+                        alert('Archive lookup failed: ' + ((response.data && response.data.message) || 'Unknown error'));
+                    }
+                }, this),
+                error: function() {
+                    $btn.prop('disabled', false).text(wirData.strings.recheckArchive || 'Recheck Archive');
+                    alert('Request failed');
+                }
+            });
+        },
+
+        applyRestoreResult: function(imageId, result) {
+            const image = this.getImageById(imageId);
+            if (!image || !result || result.dry_run) {
+                return;
+            }
+
+            image.restored = true;
+            image.restore_status = 'restored';
+            image.restored_attachment_id = Number(result.undo_attachment_id || result.new_attachment_id || 0);
+            image.restored_url = String(result.new_url || '');
+            image.undo_available = Boolean(result.undo_available && image.restored_attachment_id > 0);
+            delete image.restore_error;
+        },
+
+        clearRestoreResult: function(imageId) {
+            const image = this.getImageById(imageId);
+            if (!image) {
+                return;
+            }
+
+            delete image.restored;
+            delete image.restore_status;
+            delete image.restored_attachment_id;
+            delete image.restored_url;
+            delete image.undo_available;
+            delete image.restore_error;
+        },
+
+        applyBulkRestoreResults: function(items) {
+            if (!Array.isArray(items)) {
+                return;
+            }
+
+            items.forEach(function(item) {
+                if (!item || !item.success) {
+                    return;
+                }
+
+                this.applyRestoreResult(item.id, item);
+            }, this);
+        },
+
+        getBulkImagePayload: function(imageIds) {
+            return imageIds.map(function(imageId) {
+                const image = this.getImageById(imageId);
+                if (!image) {
+                    return null;
+                }
+
+                return {
+                    id: Number(image.id),
+                    url: image.url,
+                    archive_url: image.archive_url || null,
+                    target_date: image.target_date || null,
+                    referenced_in: Array.isArray(image.referenced_in) ? image.referenced_in : []
+                };
+            }, this).filter(Boolean);
+        },
+
+        ignoreImage: function(imageId) {
+            if (!this.currentResults || !Array.isArray(this.currentResults.broken_images)) {
+                return;
+            }
+
+            this.currentResults.broken_images = this.currentResults.broken_images.filter(function(image) {
+                return Number(image.id) !== Number(imageId);
+            });
+
+            if (this.currentResults.stats) {
+                this.currentResults.stats.images_broken = this.currentResults.broken_images.length;
+            }
+
+            this.displayResults(this.currentResults);
         },
 
         updateSelectedCount: function() {
@@ -683,8 +981,17 @@
         },
 
         confirmRestore: function(imageIds) {
-            const count = imageIds.length;
+            const selectedImages = imageIds.map($.proxy(function(imageId) {
+                return this.getImageById(imageId);
+            }, this)).filter(function(image) {
+                return image && !image.restored_attachment_id;
+            });
+            const count = selectedImages.length;
             const dryRun = $('#wir_dry_run').is(':checked');
+
+            if (count === 0) {
+                return;
+            }
             
             $('#wir-confirm-title').text('Confirm Restore');
             $('#wir-confirm-message').html(
@@ -706,32 +1013,91 @@
                 alert('Image data is no longer available. Please run the scan again.');
                 return;
             }
-
-            const data = {
-                action: 'wir_restore',
-                nonce: wirData.nonce,
-                image_url: image.url,
-                archive_url: image.archive_url,
-                dry_run: $('#wir_dry_run').is(':checked'),
-                referenced_in: JSON.stringify(image.referenced_in || [])
-            };
+            const dryRun = $('#wir_dry_run').is(':checked');
 
             $btn.prop('disabled', true).text('Restoring...');
+
+            this.requestRestore(image, dryRun).then($.proxy(function(response) {
+                if (response.success) {
+                    if (response.data && response.data.dry_run) {
+                        $btn.prop('disabled', false).text('Restore');
+                        alert(wirData.strings.dryRunComplete || 'Dry run complete. No changes were made.');
+                        return;
+                    }
+
+                    this.applyRestoreResult(imageId, response.data || {});
+                    this.displayResults(this.currentResults);
+                } else {
+                    $btn.prop('disabled', false).text('Retry');
+                    this.markLocalRestoreFailure(imageId, response.data);
+                    alert('Restore failed: ' + (response.data.error || response.data.message || 'Unknown error'));
+                }
+            }, this)).catch($.proxy(function() {
+                $btn.prop('disabled', false).text('Retry');
+                this.markLocalRestoreFailure(imageId, { error: 'Request failed' });
+                alert('Request failed');
+            }, this));
+        },
+
+        requestRestore: function(image, dryRun) {
+            return this.postAjax({
+                action: 'wir_restore',
+                nonce: wirData.nonce,
+                scan_id: this.currentScanId || '',
+                image_id: Number(image.id),
+                image_url: image.url,
+                archive_url: image.archive_url,
+                target_date: image.target_date || '',
+                dry_run: dryRun,
+                referenced_in: JSON.stringify(image.referenced_in || [])
+            }, {
+                timeout: 120000
+            });
+        },
+
+        markLocalRestoreFailure: function(imageId, payload) {
+            const image = this.getImageById(imageId);
+            if (!image) {
+                return;
+            }
+
+            image.restore_status = 'failed';
+            image.restore_error = (payload && (payload.error || payload.message)) || (wirData.strings.restoreFailed || 'Restore failed');
+        },
+
+        undoRestore: function(imageId, attachmentId, $btn) {
+            if (!attachmentId) {
+                alert('Undo is not available for this restore.');
+                return;
+            }
+
+            if (!confirm(wirData.strings.confirmUndo || 'Undo this restore?')) {
+                return;
+            }
+
+            $btn.prop('disabled', true).text(wirData.strings.undoing || 'Undoing...');
 
             $.ajax({
                 url: wirData.ajaxUrl,
                 type: 'POST',
-                data: data,
-                success: function(response) {
-                    if (response.success) {
-                        $btn.replaceWith('<span style="color: #00a32a;">&#10004; Done</span>');
-                    } else {
-                        $btn.prop('disabled', false).text('Retry');
-                        alert('Restore failed: ' + (response.data.error || 'Unknown error'));
-                    }
+                data: {
+                    action: 'wir_undo_restore',
+                    nonce: wirData.nonce,
+                    scan_id: this.currentScanId || '',
+                    image_id: Number(imageId),
+                    attachment_id: attachmentId
                 },
+                success: $.proxy(function(response) {
+                    if (response.success) {
+                        this.clearRestoreResult(imageId);
+                        this.displayResults(this.currentResults);
+                    } else {
+                        $btn.prop('disabled', false).text(wirData.strings.undoRestore || 'Undo Restore');
+                        alert('Undo failed: ' + ((response.data && (response.data.error || response.data.message)) || 'Unknown error'));
+                    }
+                }, this),
                 error: function() {
-                    $btn.prop('disabled', false).text('Retry');
+                    $btn.prop('disabled', false).text(wirData.strings.undoRestore || 'Undo Restore');
                     alert('Request failed');
                 }
             });
@@ -743,52 +1109,69 @@
             const $fill = $('.wir-progress-fill');
             const $text = $('#wir-progress-text');
             const $current = $('#wir-progress-current');
+            const images = this.getBulkImagePayload(imageIds).filter($.proxy(function(image) {
+                return !this.isImageRestored(image);
+            }, this));
             
             $modal.show();
-            $bar.addClass('is-indeterminate');
-            $fill.css('width', '');
+            $bar.removeClass('is-indeterminate');
+            $fill.css('width', '0%');
             $text.text(dryRun ? 'Checking selected images...' : 'Restoring selected images...');
-            $current.text('Submitting restore request...');
+            $current.text('Preparing restore queue...');
 
-            const data = {
-                action: 'wir_bulk_restore',
-                nonce: wirData.nonce,
-                image_ids: imageIds,
-                dry_run: dryRun
+            if (images.length === 0) {
+                $text.text('Nothing to do');
+                $current.text('All selected images are already restored.');
+                setTimeout(function() {
+                    $modal.hide();
+                }, 1200);
+                return;
+            }
+
+            let succeeded = 0;
+            let failed = 0;
+            const total = images.length;
+
+            const runQueue = async () => {
+                for (let index = 0; index < images.length; index += 1) {
+                    const image = images[index];
+                    const progressPercent = Math.round((index / total) * 100);
+                    $fill.css('width', `${progressPercent}%`);
+                    $current.text(`Processing ${index + 1} of ${total}: ${image.url}`);
+
+                    try {
+                        const response = await this.requestRestore(image, dryRun);
+                        if (response.success) {
+                            succeeded += 1;
+                            if (!dryRun) {
+                                this.applyRestoreResult(image.id, response.data || {});
+                            }
+                        } else {
+                            failed += 1;
+                            this.markLocalRestoreFailure(image.id, response.data || {});
+                        }
+                    } catch (error) {
+                        failed += 1;
+                        this.markLocalRestoreFailure(image.id, { error: 'Request failed' });
+                    }
+                }
+
+                $fill.css('width', '100%');
+                $text.text('Complete!');
+                $current.html(`Succeeded: ${succeeded}<br>Failed: ${failed}`);
+
+                if (!dryRun) {
+                    this.displayResults(this.currentResults);
+                }
+
+                setTimeout(function() {
+                    $modal.hide();
+                }, 2000);
             };
 
-            $.ajax({
-                url: wirData.ajaxUrl,
-                type: 'POST',
-                data: data,
-                success: function(response) {
-                    if (response.success) {
-                        const result = response.data;
-                        $bar.removeClass('is-indeterminate');
-                        $fill.css('width', '100%');
-                        $text.text('Complete!');
-                        $current.html(
-                            `Succeeded: ${result.succeeded}<br>` +
-                            `Failed: ${result.failed}<br>` +
-                            (result.stopped_early ? '<em>Stopped early due to resource limits</em>' : '')
-                        );
-                        
-                        setTimeout(function() {
-                            $modal.hide();
-                        }, 2000);
-                    } else {
-                        $bar.removeClass('is-indeterminate');
-                        $fill.css('width', '0%');
-                        alert('Bulk restore failed: ' + (response.data.error || 'Unknown error'));
-                        $modal.hide();
-                    }
-                },
-                error: function() {
-                    $bar.removeClass('is-indeterminate');
-                    $fill.css('width', '0%');
-                    alert('Request failed');
-                    $modal.hide();
-                }
+            runQueue().catch(function() {
+                alert('Bulk restore failed unexpectedly.');
+                $modal.hide();
             });
         },
 

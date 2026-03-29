@@ -13,12 +13,14 @@ final class Image_Restorer
     private Wayback_Api $api;
     private Logger $logger;
     private Resource_Manager $resources;
+    private State_Store $state_store;
 
     public function __construct(?Wayback_Api $api = null, ?Resource_Manager $resources = null)
     {
         $this->api = $api ?? new Wayback_Api();
         $this->logger = Logger::get_instance();
         $this->resources = $resources ?? new Resource_Manager();
+        $this->state_store = new State_Store();
 
         if (!defined('WIR_START_TIME')) {
             define('WIR_START_TIME', microtime(true));
@@ -27,122 +29,335 @@ final class Image_Restorer
 
     public function restore(array $image_data): array
     {
-        $image_url = $image_data['url'] ?? '';
-        $archive_url = $image_data['archive_url'] ?? null;
+        $image_url     = $image_data['url'] ?? '';
+        $archive_url   = $image_data['archive_url'] ?? null;
         $referenced_in = $image_data['referenced_in'] ?? [];
-        $dry_run = $image_data['dry_run'] ?? false;
+        $dry_run       = $image_data['dry_run'] ?? false;
+        $scan_id       = (string) ($image_data['scan_id'] ?? '');
+        $image_id      = (int) ($image_data['id'] ?? 0);
+        $target_date   = isset($image_data['target_date']) && is_string($image_data['target_date']) && $image_data['target_date'] !== ''
+            ? $image_data['target_date']
+            : null;
 
         if (empty($image_url)) {
-            return [
+            $result = [
                 'success' => false,
                 'error' => 'No image URL provided',
             ];
+
+            $this->persist_restore_state($scan_id, $image_id, $result);
+            return $result;
         }
 
         if ($this->resources->should_stop('restore_start')) {
-            return [
+            $result = [
                 'success' => false,
                 'error' => 'Resource limit reached',
                 'resource_limit' => true,
             ];
+
+            $this->persist_restore_state($scan_id, $image_id, $result);
+            return $result;
+        }
+
+        $this->mark_restore_started($scan_id, $image_id);
+
+        if ($target_date !== null) {
+            $archive_info = $this->api->find_archive($image_url, $target_date, true);
+            $archive_url = $archive_info['archive_url'] ?? null;
         }
 
         $this->logger->info('restore_start', [
-            'image_url' => $image_url,
+            'image_url'   => $image_url,
             'archive_url' => $archive_url,
-            'dry_run' => $dry_run,
+            'dry_run'     => $dry_run,
+            'target_date' => $target_date,
         ]);
 
         if ($dry_run) {
             $this->logger->info('restore_dry_run', [
-                'image_url' => $image_url,
+                'image_url'    => $image_url,
                 'would_restore' => true,
             ]);
 
-            return [
-                'success' => true,
-                'dry_run' => true,
-                'message' => 'Dry run - would restore image',
-                'image_url' => $image_url,
+            $result = [
+                'success'     => true,
+                'dry_run'     => true,
+                'message'     => 'Dry run - would restore image',
+                'image_url'   => $image_url,
                 'archive_url' => $archive_url,
             ];
+
+            $this->persist_restore_state($scan_id, $image_id, $result);
+            return $result;
         }
 
-        $restore_mode = Settings::get('restore_mode', 'archive_then_original');
+        $restore_mode   = Settings::get('restore_mode', 'archive_then_original');
         $download_result = $this->download_image($image_url, $archive_url, $restore_mode);
 
         if (!$download_result['success']) {
             $this->logger->error('restore_failed', [
                 'image_url' => $image_url,
-                'error' => $download_result['error'],
+                'error'     => $download_result['error'],
             ]);
 
-            return [
+            $result = [
                 'success' => false,
-                'error' => $download_result['error'],
+                'error'   => $download_result['error'],
             ];
+
+            $this->persist_restore_state($scan_id, $image_id, $result);
+            return $result;
         }
 
+        $temp_file              = $download_result['file'];
         $existing_attachment_id = $this->resolve_existing_attachment_id($image_url, $referenced_in);
 
-        if ($existing_attachment_id > 0) {
-            $import_result = $this->restore_existing_attachment(
-                $existing_attachment_id,
-                $download_result['file'],
-                $download_result['mime_type'],
-                $image_url
-            );
-        } else {
-            $import_result = $this->import_to_media_library(
-                $download_result['file'],
-                $download_result['mime_type'],
-                $image_url
-            );
-        }
+        try {
+            if ($existing_attachment_id > 0) {
+                $import_result = $this->restore_existing_attachment(
+                    $existing_attachment_id,
+                    $temp_file,
+                    $download_result['mime_type'],
+                    $image_url
+                );
+            } else {
+                $import_result = $this->import_to_media_library(
+                    $temp_file,
+                    $download_result['mime_type'],
+                    $image_url
+                );
+            }
 
-        if (!$import_result['success']) {
-            @unlink($download_result['file']);
+            if (!$import_result['success']) {
+                $this->logger->error('restore_failed', [
+                    'image_url' => $image_url,
+                    'error'     => $import_result['error'],
+                ]);
 
-            $this->logger->error('restore_failed', [
-                'image_url' => $image_url,
-                'error' => $import_result['error'],
+                $result = [
+                    'success' => false,
+                    'error'   => $import_result['error'],
+                ];
+
+                $this->persist_restore_state($scan_id, $image_id, $result);
+                return $result;
+            }
+
+            $new_attachment_id = (int) $import_result['attachment_id'];
+            $new_url           = $import_result['url'] ?? wp_get_attachment_url($new_attachment_id);
+            $backup_data       = is_array($import_result['backup'] ?? null) ? $import_result['backup'] : null;
+
+            $update_result   = ['updated' => 0, 'failed' => 0];
+            $has_url_change  = is_string($new_url) && $new_url !== '' && $new_url !== $image_url;
+            $undo_available  = ($existing_attachment_id === 0 && $has_url_change) || $backup_data !== null;
+
+            if ($has_url_change) {
+                $update_result = $this->update_post_references($image_url, $new_url, $referenced_in, $new_attachment_id);
+            }
+
+            if ($undo_available) {
+                $this->store_rollback_data(
+                    $new_attachment_id,
+                    $image_url,
+                    is_string($new_url) ? $new_url : $image_url,
+                    $referenced_in,
+                    $existing_attachment_id === 0,
+                    $existing_attachment_id,
+                    $backup_data
+                );
+            }
+
+            $this->logger->success('restore_complete', [
+                'image_url'         => $image_url,
+                'new_url'           => $new_url,
+                'new_attachment_id' => $new_attachment_id,
+                'posts_updated'     => $update_result['updated'],
+                'failed_posts'      => $update_result['failed'],
+                'undo_available'    => $undo_available,
             ]);
 
+            $this->resources->optimize();
+            $this->resources->pause();
+
+            $result = [
+                'success'           => true,
+                'dry_run'           => false,
+                'new_attachment_id' => $new_attachment_id,
+                'new_url'           => $new_url,
+                'posts_updated'     => $update_result['updated'],
+                'failed_posts'      => $update_result['failed'],
+                'undo_available'    => $undo_available,
+                'undo_attachment_id' => $undo_available ? $new_attachment_id : 0,
+            ];
+
+            $this->persist_restore_state($scan_id, $image_id, $result);
+            return $result;
+        } finally {
+            if (isset($temp_file) && is_string($temp_file) && $temp_file !== '') {
+                $this->api->cleanup_temp_file($temp_file);
+            }
+        }
+    }
+
+    private function store_rollback_data(
+        int $attachment_id,
+        string $original_url,
+        string $new_url,
+        array $referenced_in,
+        bool $was_new_import,
+        int $original_attachment_id = 0,
+        ?array $backup = null
+    ): void {
+        $affected_post_ids = array_values(array_unique(array_map(
+            static fn($r) => (int) ($r['post_id'] ?? 0),
+            array_filter($referenced_in, static fn($r) => ($r['context'] ?? '') !== 'media_library')
+        )));
+
+        update_post_meta($attachment_id, '_wir_rollback_data', [
+            'original_url'      => $original_url,
+            'new_url'           => $new_url,
+            'affected_post_ids' => $affected_post_ids,
+            'referenced_in'     => $referenced_in,
+            'was_new_import'    => $was_new_import,
+            'original_attachment_id' => $original_attachment_id,
+            'backup'            => $backup,
+            'restored_at'       => current_time('mysql'),
+        ]);
+    }
+
+    public function undo_restore(int $attachment_id): array
+    {
+        $rollback = get_post_meta($attachment_id, '_wir_rollback_data', true);
+
+        if (!is_array($rollback) || empty($rollback['original_url'])) {
+            return ['success' => false, 'error' => 'No rollback data found for this attachment'];
+        }
+
+        $original_url   = (string) $rollback['original_url'];
+        $new_url        = (string) ($rollback['new_url'] ?? '');
+        $referenced_in  = (array) ($rollback['referenced_in'] ?? []);
+        $was_new_import = (bool) ($rollback['was_new_import'] ?? false);
+        $backup         = is_array($rollback['backup'] ?? null) ? $rollback['backup'] : null;
+
+        if ($new_url === '' && $backup === null) {
+            return ['success' => false, 'error' => 'Invalid rollback data'];
+        }
+
+        if (!$was_new_import && $backup === null) {
+            return ['success' => false, 'error' => 'Undo is only available when the original file or a replacement attachment can be restored'];
+        }
+
+        $revert_result = ['updated' => 0, 'failed' => 0];
+        if ($new_url !== '' && $original_url !== '' && $original_url !== $new_url) {
+            $revert_result = $this->update_post_references($new_url, $original_url, $referenced_in, 0);
+        }
+
+        if (!$was_new_import && $backup !== null) {
+            $restore_backup = $this->restore_attachment_backup($attachment_id, $backup);
+            if (!$restore_backup['success']) {
+                return ['success' => false, 'error' => $restore_backup['error']];
+            }
+        }
+
+        delete_post_meta($attachment_id, '_wir_rollback_data');
+
+        if ($was_new_import) {
+            wp_delete_attachment($attachment_id, true);
+        }
+
+        $this->logger->info('restore_undone', [
+            'attachment_id'      => $attachment_id,
+            'original_url'       => $original_url,
+            'new_url'            => $new_url,
+            'posts_reverted'     => $revert_result['updated'],
+            'was_new_import'     => $was_new_import,
+        ]);
+
+        return [
+            'success'             => true,
+            'original_url'        => $original_url,
+            'posts_reverted'      => $revert_result['updated'],
+            'attachment_deleted'  => $was_new_import,
+        ];
+    }
+
+    private function restore_attachment_backup(int $attachment_id, array $backup): array
+    {
+        $backup_file = (string) ($backup['backup_file'] ?? '');
+        $original_path = (string) ($backup['original_path'] ?? '');
+        $original_mime_type = (string) ($backup['original_post_mime_type'] ?? '');
+        $original_metadata = is_array($backup['original_metadata'] ?? null) ? $backup['original_metadata'] : null;
+
+        if ($backup_file === '' || $original_path === '' || !is_file($backup_file)) {
             return [
                 'success' => false,
-                'error' => $import_result['error'],
+                'error' => 'Original attachment backup could not be found',
             ];
         }
 
-        $new_attachment_id = (int) $import_result['attachment_id'];
-        $new_url = $import_result['url'] ?? wp_get_attachment_url($new_attachment_id);
+        $current_path = get_attached_file($attachment_id);
+        $current_path = is_string($current_path) ? $current_path : '';
+        $original_dir = dirname($original_path);
 
-        $update_result = ['updated' => 0, 'failed' => 0];
-        if (is_string($new_url) && $new_url !== '' && $new_url !== $image_url) {
-            $update_result = $this->update_post_references($image_url, $new_url, $referenced_in, $new_attachment_id);
+        if (!file_exists($original_dir) && !wp_mkdir_p($original_dir)) {
+            return [
+                'success' => false,
+                'error' => 'Failed to recreate the original attachment directory',
+            ];
         }
 
-        @unlink($download_result['file']);
+        if (!@copy($backup_file, $original_path)) {
+            return [
+                'success' => false,
+                'error' => 'Failed to restore the original attachment file',
+            ];
+        }
 
-        $this->logger->success('restore_complete', [
-            'image_url' => $image_url,
-            'new_url' => $new_url,
-            'new_attachment_id' => $new_attachment_id,
-            'posts_updated' => $update_result['updated'],
-            'failed_posts' => $update_result['failed'],
-        ]);
+        $path_sync = $this->sync_attachment_file_path($attachment_id, $original_path);
+        if (!$path_sync['success']) {
+            return [
+                'success' => false,
+                'error' => $path_sync['error'],
+            ];
+        }
 
-        $this->resources->optimize();
-        $this->resources->pause();
+        if ($original_mime_type !== '') {
+            wp_update_post([
+                'ID' => $attachment_id,
+                'post_mime_type' => $original_mime_type,
+            ]);
+        }
 
-        return [
-            'success' => true,
-            'dry_run' => false,
-            'new_attachment_id' => $new_attachment_id,
-            'new_url' => $new_url,
-            'posts_updated' => $update_result['updated'],
-            'failed_posts' => $update_result['failed'],
-        ];
+        if ($original_metadata !== null) {
+            wp_update_attachment_metadata($attachment_id, $original_metadata);
+        }
+
+        if ($current_path !== '' && $current_path !== $original_path && is_file($current_path)) {
+            @unlink($current_path);
+        }
+
+        @unlink($backup_file);
+
+        return ['success' => true];
+    }
+
+    private function mark_restore_started(string $scan_id, int $image_id): void
+    {
+        if ($scan_id === '' || $image_id <= 0) {
+            return;
+        }
+
+        $this->state_store->mark_restore_started($scan_id, $image_id);
+    }
+
+    private function persist_restore_state(string $scan_id, int $image_id, array $result): void
+    {
+        if ($scan_id === '' || $image_id <= 0) {
+            return;
+        }
+
+        $this->state_store->mark_restore_result($scan_id, $image_id, $result);
     }
 
     private function download_image(string $original_url, ?string $archive_url, string $restore_mode): array
@@ -310,7 +525,7 @@ final class Image_Restorer
             $post_id = $reference['post_id'];
             $context = $reference['context'];
 
-            if (in_array($post_id, $processed_posts)) {
+            if (in_array($post_id, $processed_posts, true)) {
                 continue;
             }
 
@@ -342,25 +557,279 @@ final class Image_Restorer
         }
 
         $content = $post->post_content;
+        $has_exact_match   = str_contains($content, $old_url);
+        $has_size_variants = !$has_exact_match && $this->has_srcset_size_variants($content, $old_url);
 
-        if (str_contains($content, $old_url)) {
-            $updated_content = str_replace($old_url, $new_url, $content);
+        if (!$has_exact_match && !$has_size_variants) {
+            return false;
+        }
 
-            wp_update_post([
-                'ID' => $post_id,
-                'post_content' => $updated_content,
-            ]);
+        $updated_content = $this->replace_image_url_in_content($content, $old_url, $new_url);
 
-            $this->logger->info('post_content_updated', [
+        if ($updated_content === $content) {
+            return false;
+        }
+
+        $update_result = wp_update_post([
+            'ID'           => $post_id,
+            'post_content' => $updated_content,
+        ], true);
+
+        if (is_wp_error($update_result)) {
+            $this->logger->warning('post_content_update_failed', [
                 'post_id' => $post_id,
                 'old_url' => $old_url,
                 'new_url' => $new_url,
+                'error' => $update_result->get_error_message(),
             ]);
 
-            return true;
+            return false;
         }
 
-        return false;
+        $this->logger->info('post_content_updated', [
+            'post_id' => $post_id,
+            'old_url' => $old_url,
+            'new_url' => $new_url,
+        ]);
+
+        return true;
+    }
+
+    private function replace_image_url_in_content(string $content, string $old_url, string $new_url): string
+    {
+        $updated = $this->replace_image_url_in_blocks($content, $old_url, $new_url);
+        $updated = $this->replace_image_url_in_markup($updated, $old_url, $new_url);
+        $updated = $this->replace_string_url_occurrences($updated, $old_url, $new_url);
+
+        return $updated;
+    }
+
+    private function replace_image_url_in_blocks(string $content, string $old_url, string $new_url): string
+    {
+        if (
+            !function_exists('has_blocks') ||
+            !function_exists('parse_blocks') ||
+            !function_exists('serialize_blocks') ||
+            !has_blocks($content)
+        ) {
+            return $content;
+        }
+
+        $blocks = parse_blocks($content);
+        if (!is_array($blocks)) {
+            return $content;
+        }
+
+        $changed = false;
+        foreach ($blocks as $index => $block) {
+            if (!is_array($block)) {
+                continue;
+            }
+
+            $blocks[$index] = $this->replace_urls_in_block($block, $old_url, $new_url, $changed);
+        }
+
+        return $changed ? serialize_blocks($blocks) : $content;
+    }
+
+    private function replace_urls_in_block(array $block, string $old_url, string $new_url, bool &$changed): array
+    {
+        if (isset($block['attrs']) && is_array($block['attrs'])) {
+            $block['attrs'] = $this->replace_urls_in_value($block['attrs'], $old_url, $new_url, $changed);
+        }
+
+        if (isset($block['innerHTML']) && is_string($block['innerHTML'])) {
+            $updated_html = $this->replace_image_url_in_markup($block['innerHTML'], $old_url, $new_url);
+            $updated_html = $this->replace_string_url_occurrences($updated_html, $old_url, $new_url);
+            if ($updated_html !== $block['innerHTML']) {
+                $block['innerHTML'] = $updated_html;
+                $changed = true;
+            }
+        }
+
+        if (isset($block['innerContent']) && is_array($block['innerContent'])) {
+            foreach ($block['innerContent'] as $index => $inner_content) {
+                if (!is_string($inner_content)) {
+                    continue;
+                }
+
+                $updated_inner_content = $this->replace_image_url_in_markup($inner_content, $old_url, $new_url);
+                $updated_inner_content = $this->replace_string_url_occurrences($updated_inner_content, $old_url, $new_url);
+                if ($updated_inner_content !== $inner_content) {
+                    $block['innerContent'][$index] = $updated_inner_content;
+                    $changed = true;
+                }
+            }
+        }
+
+        if (isset($block['innerBlocks']) && is_array($block['innerBlocks'])) {
+            foreach ($block['innerBlocks'] as $index => $inner_block) {
+                if (!is_array($inner_block)) {
+                    continue;
+                }
+
+                $block['innerBlocks'][$index] = $this->replace_urls_in_block($inner_block, $old_url, $new_url, $changed);
+            }
+        }
+
+        return $block;
+    }
+
+    private function replace_urls_in_value(mixed $value, string $old_url, string $new_url, bool &$changed): mixed
+    {
+        if (is_string($value)) {
+            $updated = $this->replace_string_url_occurrences($value, $old_url, $new_url);
+            if ($updated !== $value) {
+                $changed = true;
+            }
+
+            return $updated;
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $value[$key] = $this->replace_urls_in_value($item, $old_url, $new_url, $changed);
+            }
+        }
+
+        return $value;
+    }
+
+    private function replace_image_url_in_markup(string $content, string $old_url, string $new_url): string
+    {
+        $updated = $this->replace_standard_attribute_urls($content, $old_url, $new_url);
+        $updated = $this->replace_srcset_attributes($updated, $old_url, $new_url);
+        $updated = $this->replace_srcset_size_variants($updated, $old_url, $new_url);
+
+        return $updated;
+    }
+
+    private function replace_standard_attribute_urls(string $content, string $old_url, string $new_url): string
+    {
+        $attributes = [
+            'src',
+            'href',
+            'poster',
+            'data-src',
+            'data-lazy-src',
+            'data-src-full',
+            'data-full-url',
+            'data-image-src',
+            'data-original',
+            'data-orig-file',
+            'data-medium-file',
+            'data-large-file',
+        ];
+
+        $pattern = '#\b(' . implode('|', array_map(static fn(string $attribute): string => preg_quote($attribute, '#'), $attributes)) . ')\s*=\s*(["\'])(.*?)\2#is';
+
+        return preg_replace_callback(
+            $pattern,
+            function (array $matches) use ($old_url, $new_url): string {
+                $updated_value = $this->replace_string_url_occurrences((string) $matches[3], $old_url, $new_url);
+                return $matches[1] . '=' . $matches[2] . $updated_value . $matches[2];
+            },
+            $content
+        ) ?? $content;
+    }
+
+    private function replace_srcset_attributes(string $content, string $old_url, string $new_url): string
+    {
+        $pattern = '#\b(srcset|data-srcset)\s*=\s*(["\'])(.*?)\2#is';
+
+        return preg_replace_callback(
+            $pattern,
+            function (array $matches) use ($old_url, $new_url): string {
+                $updated_value = $this->replace_srcset_attribute_value((string) $matches[3], $old_url, $new_url);
+                return $matches[1] . '=' . $matches[2] . $updated_value . $matches[2];
+            },
+            $content
+        ) ?? $content;
+    }
+
+    private function replace_srcset_attribute_value(string $srcset, string $old_url, string $new_url): string
+    {
+        $parts = preg_split('/\s*,\s*/', trim($srcset));
+        if (!is_array($parts)) {
+            return $srcset;
+        }
+
+        $updated_parts = [];
+        foreach ($parts as $part) {
+            if ($part === '') {
+                continue;
+            }
+
+            $tokens = preg_split('/\s+/', trim($part), 2);
+            if (!is_array($tokens) || empty($tokens[0])) {
+                $updated_parts[] = $part;
+                continue;
+            }
+
+            $tokens[0] = $this->replace_string_url_occurrences($tokens[0], $old_url, $new_url);
+            $updated_parts[] = implode(' ', array_filter($tokens, static fn(string $token): bool => $token !== ''));
+        }
+
+        return implode(', ', $updated_parts);
+    }
+
+    private function replace_string_url_occurrences(string $content, string $old_url, string $new_url): string
+    {
+        if (!str_contains($content, $old_url) && !$this->has_srcset_size_variants($content, $old_url)) {
+            return $content;
+        }
+
+        $updated = str_replace($old_url, $new_url, $content);
+
+        return $this->replace_srcset_size_variants($updated, $old_url, $new_url);
+    }
+
+    private function has_srcset_size_variants(string $content, string $url): bool
+    {
+        $old_path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($old_path) || $old_path === '') {
+            return false;
+        }
+
+        $base = pathinfo($old_path, PATHINFO_FILENAME);
+        $ext  = pathinfo($old_path, PATHINFO_EXTENSION);
+        $dir  = dirname($old_path);
+
+        if ($base === '' || $ext === '') {
+            return false;
+        }
+
+        $pattern = '#' . preg_quote($dir . '/' . $base, '#') . '-\d+x\d+\.' . preg_quote($ext, '#') . '#';
+        return (bool) preg_match($pattern, $content);
+    }
+
+    private function replace_srcset_size_variants(string $content, string $old_url, string $new_url): string
+    {
+        $old_path = parse_url($old_url, PHP_URL_PATH);
+        $new_path = parse_url($new_url, PHP_URL_PATH);
+
+        if (!is_string($old_path) || !is_string($new_path)) {
+            return $content;
+        }
+
+        $old_dir  = dirname($old_path);
+        $old_base = pathinfo($old_path, PATHINFO_FILENAME);
+        $old_ext  = pathinfo($old_path, PATHINFO_EXTENSION);
+        $new_dir  = dirname($new_path);
+        $new_base = pathinfo($new_path, PATHINFO_FILENAME);
+        $new_ext  = pathinfo($new_path, PATHINFO_EXTENSION);
+
+        if ($old_base === '' || $old_ext === '') {
+            return $content;
+        }
+
+        $pattern = '#' . preg_quote($old_dir . '/' . $old_base, '#') . '-(\d+x\d+)\.' . preg_quote($old_ext, '#') . '#';
+
+        return preg_replace_callback(
+            $pattern,
+            static fn(array $m): string => $new_dir . '/' . $new_base . '-' . $m[1] . '.' . $new_ext,
+            $content
+        ) ?? $content;
     }
 
     private function update_featured_image(
@@ -402,23 +871,30 @@ final class Image_Restorer
         return true;
     }
 
-    public function bulk_restore(array $image_ids, bool $dry_run = false): array
+    public function bulk_restore(
+        array $image_ids,
+        bool $dry_run = false,
+        array $provided_images = [],
+        ?string $scan_id = null
+    ): array
     {
-        $scan_id = (string) get_transient('wir_current_scan_id');
-        if (!$scan_id) {
-            $scan_id = (string) get_option('wir_last_scan_id', '');
+        $provided_lookup = $this->index_provided_images($provided_images);
+        $scan_id = is_string($scan_id) && $scan_id !== '' ? $scan_id : null;
+
+        if (empty($image_ids) && !empty($provided_lookup)) {
+            $image_ids = array_keys($provided_lookup);
         }
 
-        if (!$scan_id) {
-            return [
-                'success' => false,
-                'error' => 'No scan results found',
-            ];
+        $scan_data = null;
+        if (count($provided_lookup) < count($image_ids)) {
+            $scan_id = $scan_id ?? $this->state_store->get_current_scan_id();
+
+            if ($scan_id) {
+                $scan_data = $this->get_scan_results($scan_id);
+            }
         }
 
-        $scan_data = $this->get_scan_results($scan_id);
-
-        if (!$scan_data) {
+        if (!$scan_data && empty($provided_lookup)) {
             return [
                 'success' => false,
                 'error' => 'Scan results expired',
@@ -433,6 +909,7 @@ final class Image_Restorer
             'stopped_early' => false,
             'stop_reason' => null,
             'errors' => [],
+            'items' => [],
         ];
 
         $batch_size = $this->resources->get_batch_size();
@@ -444,35 +921,52 @@ final class Image_Restorer
                 break;
             }
 
-            $image_data = null;
-            foreach ($scan_data['broken_images'] as $img) {
-                if ((int) ($img['id'] ?? 0) === (int) $image_id) {
-                    $image_data = $img;
-                    break;
-                }
-            }
+            $image_data = $provided_lookup[(int) $image_id] ?? $this->find_image_in_scan_data($scan_data, (int) $image_id);
 
             if (!$image_data) {
+                $error = 'Image not found in scan results';
                 $result['errors'][] = [
                     'id' => $image_id,
-                    'error' => 'Image not found in scan results',
+                    'error' => $error,
+                ];
+                $result['items'][] = [
+                    'id' => (int) $image_id,
+                    'success' => false,
+                    'error' => $error,
                 ];
                 $result['failed']++;
                 continue;
             }
 
+            $image_data['id'] = (int) $image_id;
             $image_data['dry_run'] = $dry_run;
+            $image_data['scan_id'] = $scan_id ?? '';
             $restore_result = $this->restore($image_data);
 
             $result['processed']++;
 
             if ($restore_result['success']) {
                 $result['succeeded']++;
+                $result['items'][] = [
+                    'id' => (int) $image_id,
+                    'success' => true,
+                    'dry_run' => (bool) ($restore_result['dry_run'] ?? false),
+                    'attachment_id' => (int) ($restore_result['new_attachment_id'] ?? 0),
+                    'new_url' => (string) ($restore_result['new_url'] ?? ''),
+                    'undo_available' => !empty($restore_result['undo_available']),
+                    'undo_attachment_id' => (int) ($restore_result['undo_attachment_id'] ?? 0),
+                ];
             } else {
+                $error = $restore_result['error'] ?? 'Unknown error';
                 $result['failed']++;
                 $result['errors'][] = [
                     'id' => $image_id,
-                    'error' => $restore_result['error'] ?? 'Unknown error',
+                    'error' => $error,
+                ];
+                $result['items'][] = [
+                    'id' => (int) $image_id,
+                    'success' => false,
+                    'error' => $error,
                 ];
             }
 
@@ -492,6 +986,42 @@ final class Image_Restorer
         ]);
 
         return $result;
+    }
+
+    private function index_provided_images(array $provided_images): array
+    {
+        $lookup = [];
+
+        foreach ($provided_images as $image) {
+            if (!is_array($image)) {
+                continue;
+            }
+
+            $image_id = (int) ($image['id'] ?? 0);
+            $image_url = (string) ($image['url'] ?? '');
+            if ($image_id <= 0 || $image_url === '') {
+                continue;
+            }
+
+            $lookup[$image_id] = $image;
+        }
+
+        return $lookup;
+    }
+
+    private function find_image_in_scan_data(?array $scan_data, int $image_id): ?array
+    {
+        if (!is_array($scan_data) || empty($scan_data['broken_images']) || !is_array($scan_data['broken_images'])) {
+            return null;
+        }
+
+        foreach ($scan_data['broken_images'] as $image) {
+            if ((int) ($image['id'] ?? 0) === $image_id) {
+                return $image;
+            }
+        }
+
+        return null;
     }
 
     private function get_preferred_extension(string $original_extension, string $mime_type): string
@@ -551,6 +1081,7 @@ final class Image_Restorer
             ];
         }
 
+        $backup = $this->create_attachment_backup($attachment_id);
         $target_path = $this->get_attachment_restore_path($attachment_id, $mime_type);
         if ($target_path === '') {
             return [
@@ -614,6 +1145,42 @@ final class Image_Restorer
             'success' => true,
             'attachment_id' => $attachment_id,
             'url' => $attachment_url,
+            'backup' => $backup,
+        ];
+    }
+
+    private function create_attachment_backup(int $attachment_id): ?array
+    {
+        $current_path = get_attached_file($attachment_id);
+        if (!is_string($current_path) || $current_path === '' || !is_file($current_path)) {
+            return null;
+        }
+
+        $uploads = wp_get_upload_dir();
+        $backup_dir = trailingslashit((string) ($uploads['basedir'] ?? '')) . 'wayback-image-restorer/backups';
+        if ($backup_dir === '' || (!file_exists($backup_dir) && !wp_mkdir_p($backup_dir))) {
+            return null;
+        }
+
+        $extension = (string) pathinfo($current_path, PATHINFO_EXTENSION);
+        $backup_name = sprintf(
+            'attachment-%d-%s.%s',
+            $attachment_id,
+            date('YmdHis'),
+            $extension !== '' ? $extension : 'bak'
+        );
+        $backup_path = trailingslashit($backup_dir) . wp_unique_filename($backup_dir, $backup_name);
+
+        if (!@copy($current_path, $backup_path)) {
+            return null;
+        }
+
+        return [
+            'backup_file' => $backup_path,
+            'original_path' => $current_path,
+            'original_relative_path' => (string) get_post_meta($attachment_id, '_wp_attached_file', true),
+            'original_post_mime_type' => (string) get_post_mime_type($attachment_id),
+            'original_metadata' => wp_get_attachment_metadata($attachment_id),
         ];
     }
 
@@ -734,12 +1301,12 @@ final class Image_Restorer
     {
         $scan_ids = array_unique(array_filter([
             $scan_id,
-            (string) get_transient('wir_current_scan_id'),
-            (string) get_option('wir_last_scan_id', ''),
+            $this->state_store->get_current_scan_id(),
+            $this->state_store->get_last_scan_id(),
         ]));
 
         foreach ($scan_ids as $candidate_scan_id) {
-            $scan_data = get_transient('wir_last_scan_' . $candidate_scan_id);
+            $scan_data = $this->state_store->get_scan_results((string) $candidate_scan_id);
             if (is_array($scan_data) && !empty($scan_data['broken_images']) && is_array($scan_data['broken_images'])) {
                 return $scan_data;
             }

@@ -36,6 +36,8 @@ require_once __DIR__ . '/includes/class-loader.php';
 require_once __DIR__ . '/includes/class-settings.php';
 require_once __DIR__ . '/includes/class-logger.php';
 require_once __DIR__ . '/includes/class-resource-manager.php';
+require_once __DIR__ . '/includes/class-operation-lock.php';
+require_once __DIR__ . '/includes/class-state-store.php';
 require_once __DIR__ . '/includes/class-wayback-api.php';
 require_once __DIR__ . '/includes/class-image-scanner.php';
 require_once __DIR__ . '/includes/class-image-restorer.php';
@@ -45,6 +47,11 @@ require_once __DIR__ . '/admin/class-admin.php';
 require_once __DIR__ . '/admin/class-admin-ajax.php';
 
 require_once __DIR__ . '/public/class-public.php';
+
+if (defined('WP_CLI') && \WP_CLI) {
+    require_once __DIR__ . '/includes/class-cli-command.php';
+    \WP_CLI::add_command('wayback', new CLI_Command());
+}
 
 function wir(): Wayback_Image_Restorer
 {

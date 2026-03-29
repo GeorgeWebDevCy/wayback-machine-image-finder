@@ -20,6 +20,7 @@ final class Image_Scanner
     private string $upload_base_url;
     private string $scan_id;
     private Resource_Manager $resources;
+    private State_Store $state_store;
     private array $broken_url_cache = [];
 
     public function __construct(?Resource_Manager $resources = null)
@@ -30,6 +31,7 @@ final class Image_Scanner
         $this->upload_base_url = rtrim((string) ($upload['baseurl'] ?? ''), '/');
         $this->scan_id = $this->generate_scan_id();
         $this->resources = $resources ?? new Resource_Manager();
+        $this->state_store = new State_Store();
 
         if (!defined('WIR_START_TIME')) {
             define('WIR_START_TIME', microtime(true));
@@ -195,7 +197,7 @@ final class Image_Scanner
             'broken_images' => array_values($broken_images),
         ];
 
-        set_transient('wir_last_scan_' . $this->scan_id, $result, HOUR_IN_SECONDS);
+        $this->state_store->save_scan_results($result, null, true);
 
         $logger->info('scan_complete', [
             'scan_id' => $this->scan_id,
@@ -299,6 +301,7 @@ final class Image_Scanner
             'url' => $url,
             'type' => $this->get_image_type($url),
             'referenced_in' => [$reference],
+            'target_date' => $target_date,
             'archive_found' => $archive_info !== null,
             'archive_url' => $archive_info['archive_url'] ?? null,
             'archive_timestamp' => $archive_info['timestamp'] ?? null,

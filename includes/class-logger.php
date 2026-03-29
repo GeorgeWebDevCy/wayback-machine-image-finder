@@ -107,24 +107,7 @@ final class Logger
         ];
         $args = wp_parse_args($args, $defaults);
 
-        $all_logs = $this->read_logs();
-        
-        if ($args['level'] !== 'all') {
-            $all_logs = array_filter($all_logs, fn($log) => ($log['level'] ?? '') === $args['level']);
-        }
-
-        if ($args['action'] !== 'all') {
-            $all_logs = array_filter($all_logs, fn($log) => ($log['action'] ?? '') === $args['action']);
-        }
-
-        if (!empty($args['search'])) {
-            $search = strtolower($args['search']);
-            $all_logs = array_filter($all_logs, function ($log) use ($search) {
-                $text = json_encode($log);
-                return str_contains(strtolower($text), $search);
-            });
-        }
-
+        $all_logs = $this->read_filtered_logs($args);
         $all_logs = array_values($all_logs);
         $total = count($all_logs);
         $total_pages = ceil($total / $args['per_page']);
@@ -137,6 +120,59 @@ final class Logger
             'total' => $total,
             'total_pages' => $total_pages,
         ];
+    }
+
+    private function read_filtered_logs(array $filters): array
+    {
+        $logs = [];
+
+        if (!file_exists($this->current_log_file)) {
+            return $logs;
+        }
+
+        $handle = fopen($this->current_log_file, 'r');
+        if ($handle === false) {
+            return $logs;
+        }
+
+        while (($line = fgets($handle)) !== false) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $entry = json_decode($line, true);
+            if (!is_array($entry) || !$this->matches_log_filters($entry, $filters)) {
+                continue;
+            }
+
+            $logs[] = $entry;
+        }
+
+        fclose($handle);
+
+        return array_reverse($logs);
+    }
+
+    private function matches_log_filters(array $log, array $filters): bool
+    {
+        if (($filters['level'] ?? 'all') !== 'all' && ($log['level'] ?? '') !== $filters['level']) {
+            return false;
+        }
+
+        if (($filters['action'] ?? 'all') !== 'all' && ($log['action'] ?? '') !== $filters['action']) {
+            return false;
+        }
+
+        if (!empty($filters['search'])) {
+            $search = strtolower((string) $filters['search']);
+            $text = wp_json_encode($log);
+            if (!is_string($text) || !str_contains(strtolower($text), $search)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function read_logs(): array
